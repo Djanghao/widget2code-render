@@ -1,0 +1,4 @@
+# The client (RenderClient, RenderResult, the wire) needs nothing at all.
+# These are for running a renderer in-process, and for the tests.
+playwright==1.62.0
+pytest>=7

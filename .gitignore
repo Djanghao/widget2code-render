@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+node_modules/
+.vite/
+# Staged from the building machine at build time; 400+ MB and machine-specific.
+docker/hostfonts.tar
+# Optional offline build cache: 46 MB of wheels PyPI already has.
+docker/wheels/
