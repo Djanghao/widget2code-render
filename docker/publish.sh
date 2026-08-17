@@ -43,32 +43,40 @@ docker push "${REMOTE}:${SHA}"
 docker push "${REMOTE}:latest"
 
 # The overview a registry shows is not part of the image, so pushing one
-# without it leaves an unexplained 4 GB download on the page.
-if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  echo "updating the Docker Hub description..."
-  JWT=$(curl -s -H "Content-Type: application/json" \
-    -d "{\"username\":\"${NAMESPACE}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
-    https://hub.docker.com/v2/users/login/ | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))')
-  if [ -n "$JWT" ]; then
-    python3 - "$JWT" "$REMOTE" <<'PY'
-import json, sys, urllib.request
-jwt, remote = sys.argv[1], sys.argv[2]
-body = json.dumps({
-    "full_description": open("README.md").read(),
-    "description": "Deterministic React-widget renderer (JSX to PNG) over a Unix socket.",
-}).encode()
-request = urllib.request.Request(
-    f"https://hub.docker.com/v2/repositories/{remote}/", data=body, method="PATCH",
+# without it leaves an unexplained multi-GB download on the page. Uses
+# DOCKERHUB_TOKEN when set, otherwise the credential `docker login` already
+# stored — the same account, and it goes only to the Hub.
+python3 - "$REMOTE" <<'PYEOF' || echo "  (overview not updated; set DOCKERHUB_TOKEN or edit it in the web UI)" >&2
+import base64, json, os, sys, urllib.request
+
+remote = sys.argv[1]
+secret = os.environ.get("DOCKERHUB_TOKEN")
+user = remote.split("/")[0]
+if not secret:
+    entry = json.load(open(os.path.expanduser("~/.docker/config.json"))) \
+        .get("auths", {}).get("https://index.docker.io/v1/", {})
+    if not entry.get("auth"):
+        raise SystemExit("no credential available")
+    user, _, secret = base64.b64decode(entry["auth"]).decode().partition(":")
+
+login = urllib.request.Request(
+    "https://hub.docker.com/v2/users/login/",
+    data=json.dumps({"username": user, "password": secret}).encode(),
+    headers={"Content-Type": "application/json"})
+with urllib.request.urlopen(login) as response:
+    jwt = json.load(response)["token"]
+
+patch = urllib.request.Request(
+    f"https://hub.docker.com/v2/repositories/{remote}/",
+    data=json.dumps({
+        "full_description": open("README.md").read(),
+        "description": "Deterministic React-widget renderer (JSX to PNG) over a Unix socket.",
+    }).encode(),
+    method="PATCH",
     headers={"Content-Type": "application/json", "Authorization": f"JWT {jwt}"})
-with urllib.request.urlopen(request) as response:
-    print("  description updated:", response.status)
-PY
-  else
-    echo "  could not authenticate to the Hub API; paste DOCKERHUB.md into the web UI" >&2
-  fi
-else
-  echo "set DOCKERHUB_TOKEN to also publish README.md as the Docker Hub overview"
-fi
+with urllib.request.urlopen(patch) as response:
+    print("  overview updated from README.md:", response.status)
+PYEOF
 
 echo
 echo "published. On any other machine:"
