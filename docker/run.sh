@@ -50,5 +50,5 @@ for _ in $(seq 1 600); do
   fi
   sleep 1
 done
-echo "daemon did not come up within 120s; docker logs $NAME" >&2
+echo "daemon did not come up within 600s; docker logs $NAME" >&2
 exit 1
