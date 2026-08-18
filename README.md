@@ -5,6 +5,13 @@ picture or a defect of the submitted code — never a failure of the renderer.
 
 Image: [`houstonzhang/w2c-render`](https://hub.docker.com/r/houstonzhang/w2c-render)
 
+## Using it from an agent
+
+The full instructions - deploy, call, every parameter, and how to read a
+failure - are one file:
+
+**https://github.com/Djanghao/widget2code-render/blob/main/SKILL.md**
+
 ## Quick start
 
 ```bash
