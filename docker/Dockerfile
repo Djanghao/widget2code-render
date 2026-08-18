@@ -17,7 +17,8 @@ LABEL org.opencontainers.image.title="w2c-render" \
       org.opencontainers.image.description="Deterministic React-widget renderer (JSX to PNG) served over a Unix socket, with a frozen rasterization stack and a per-host golden self-check." \
       org.opencontainers.image.source="https://github.com/Djanghao/widget2code-render" \
       org.opencontainers.image.documentation="https://github.com/Djanghao/widget2code-render#readme" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="MIT" \
+      io.claude.skill="https://github.com/Djanghao/widget2code-render/blob/main/.claude/skills/render-widget/SKILL.md"
 
 # Node for the Vite dev server and for installing its dependencies.
 COPY --from=node:20-bullseye-slim /usr/local/bin/node /usr/local/bin/node
@@ -55,6 +56,26 @@ RUN cd renderer && npm ci --no-audit --no-fund
 
 COPY renderer/ renderer/
 COPY w2c_render/ w2c_render/
+COPY .claude/skills/ .claude/skills/
+COPY docker/selfcheck.py docker/selfcheck.py
+COPY docker/golden/ docker/golden/
+COPY docker/golden.json docker/golden.json
+
+# Warm Vite once here so a container start never pays for it: the dependency
+# pre-bundle (esbuild over react/echarts/recharts) is the slow part of a cold
+# start, and baking it in turns a multi-minute first start on a loaded machine
+# into seconds. Then make the tree writable — the container runs as the
+# invoking host user (run.sh --user), and Vite writes its dep cache and
+# config-bundle staging inside node_modules.
+#
+# Never fatal. A build that dies because the warm-up was OOM-killed on a busy
+# machine fails for a reason that has nothing to do with what it is building:
+# the image renders identically either way, only its first start is slower.
+RUN cd renderer && npm ci --no-audit --no-fund
+
+COPY renderer/ renderer/
+COPY w2c_render/ w2c_render/
+COPY .claude/skills/ .claude/skills/
 COPY docker/selfcheck.py docker/selfcheck.py
 COPY docker/golden/ docker/golden/
 COPY docker/golden.json docker/golden.json
@@ -73,7 +94,7 @@ RUN cd renderer && \
          2>/dev/null && break; \
        sleep 1; \
      done; \
-     kill $VPID 2>/dev/null; wait $VPID 2>/dev/null; true) && \
+     kill $VPID 2>/dev/null; wait $VPID 2>/dev/null; true) || true; \
     chmod -R a+rwX /opt/w2c/renderer
 
 # The daemon's socket + heartbeat live here; mount the same path from the host
