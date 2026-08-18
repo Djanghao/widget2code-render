@@ -67,7 +67,21 @@ RENDER_ATTEMPTS_BEFORE_RECOVERY = 2
 RECOVERY_BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 # Loud enough to notice in a log, rare enough not to spam one.
 RECOVERY_ALARM_AFTER = 5
-CANARY_TIMEOUT_MS = 15_000
+# The clock starts when the renderer starts failing, not when the caller starts
+# waiting. Queueing is not a failure: 1,822 requests against an eight-page pool
+# leave the last one waiting almost two minutes by arithmetic alone, and
+# counting that as "unrenderable" turned 217 healthy widgets into
+# `UnknownRenderFailure`, every one of them "across 0 rebuilds". So this bounds
+# the repair regime — how long the renderer may keep rebuilding itself over one
+# file before admitting it cannot say why. What comes back then is `unknown` — not the widget's fault,
+# not silence, but the renderer saying it cannot explain itself, so the failure
+# is discovered instead of waited on. An earlier version never gave up, on the
+# reasoning that any answer contaminates the data; a call that never returns
+# contaminates it too, silently, and takes the collection with it.
+SEVERE_RENDER_TIMEOUT_S = float(os.environ.get("W2C_SEVERE_RENDER_TIMEOUT", 120))
+# esbuild is fast; a diagnosis that takes longer than this is not worth the
+# render it is holding up.
+SYNTAX_DIAGNOSIS_TIMEOUT_S = 20
 # Nothing on the render path may wait forever (README.md, invariant
 # ③): a pool that lost its pages is only restored by the repair, and the
 # repair is only reached by returning a failure.
@@ -95,6 +109,35 @@ _INAPPLICABLE_ADVICE = (
     " You likely forgot to export your component from the file it's defined in,"
     " or you might have mixed up default and named imports.",
 )
+
+
+# Animation is the one thing a screenshot cannot be honest about: the frame it
+# catches is whichever the clock allowed, so the same widget yields different
+# pixels on a loaded machine than on an idle one. Measured on a CSS transition:
+# four renders, two distinct images.
+#
+# So time is taken away from the page before it is measured. Durations collapse
+# and delays are pulled into the past, which lands finite animations and
+# transitions on their final keyframe immediately; `iteration-count: 1` gives an
+# infinite animation an end to land on as well. The alternative — pausing —
+# freezes an arbitrary frame, which is the nondeterminism, not the cure.
+#
+# `fill-mode: forwards` is what makes it the *finished* state rather than the
+# unstarted one. A CSS animation reverts to the element's base style when it
+# ends, so a bar that grows from 0 to 180px snaps back to its authored 20px the
+# moment it completes — the animation's whole point, undone, and measured as
+# 20px in the screenshot.
+_FREEZE_ANIMATIONS_CSS = """
+*, *::before, *::after {
+  animation-delay: -1ms !important;
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  animation-fill-mode: forwards !important;
+  transition-delay: -1ms !important;
+  transition-duration: 1ms !important;
+}
+"""
+
 
 # Browser-side programs, kept as .js files beside the Vite project so they get
 # highlighting and lint. Loaded once at import; each is a single JS expression
@@ -143,6 +186,64 @@ def _first_page_error(console_errors: list[str]) -> Optional[str]:
         if entry.startswith("pageerror: "):
             return _first_line(entry[len("pageerror: "):])
     return None
+
+
+
+# What a syntax error looks like from inside the browser: the module never
+# loads, and the page can only say so. The message names a temporary path and
+# no cause, which is the least useful thing the renderer produces — 172 of the
+# 252 failures in one collection were exactly this string. esbuild knows the
+# real answer, so it is asked, but only here: a widget that loaded fine never
+# pays for the check.
+_MODULE_FETCH_FAILURE = "failed to fetch dynamically imported module"
+
+
+async def _syntax_diagnosis(jsx: Path) -> Optional[str]:
+    """The real reason this file would not load, or None if it parses.
+
+    esbuild is a subprocess, and calling it inline blocks the event loop this
+    daemon serves every other render from — long enough, on a loaded machine,
+    for the supervisor to read the silence as a wedged process and restart it.
+    So it runs in a thread, and a diagnosis that does not arrive quickly is
+    dropped rather than waited on: the render already has an answer, this only
+    makes it a better one.
+    """
+    def probe() -> Optional[str]:
+        from .syntax import check_syntax, format_syntax_error
+        result = check_syntax(jsx, timeout=SYNTAX_DIAGNOSIS_TIMEOUT_S)
+        return None if result.ok else format_syntax_error(result)
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(probe), timeout=SYNTAX_DIAGNOSIS_TIMEOUT_S + 5
+        )
+    except Exception:
+        return None                      # never let diagnosis break a render
+
+
+
+# React reports one failure through several channels: the boundary, the window
+# handler, and a component-stack message whose frames are all renderer
+# internals. Repeating the same sentence three times does not make it clearer,
+# and every extra line is one a model has to read past to find the fix.
+_REACT_STACK_NOTE = "the above error occurred in the"
+
+
+def _useful_console(entries: list[str], error: Optional[str]) -> list[str]:
+    """Console output that says something the result does not already say."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        body = entry.split(": ", 1)[-1].strip()
+        if body in seen:
+            continue                              # the same throw, again
+        seen.add(body)
+        if error and body == error.strip():
+            continue                              # already the error field
+        if _REACT_STACK_NOTE in body.lower():
+            continue                              # renderer frames only
+        kept.append(entry)
+    return kept
 
 
 def _png_for(jsx_path: PathLike, output_path: Optional[PathLike]) -> Path:
@@ -327,6 +428,7 @@ class RenderService:
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
         force_resize: bool = True,
+        freeze_animations: bool = True,
     ) -> RenderResult:
         """Render a .jsx to PNG. Returns a picture or a defect of that file.
 
@@ -341,19 +443,23 @@ class RenderService:
         rendered on the repaired pool: with the renderer proven healthy,
         nothing but this file explains why it never became ready.
 
-        The repair loop is deliberately unbounded — a bounded renderer must
-        eventually answer with infrastructure noise or drop the episode, and
-        either way it decides what enters the dataset. A broken renderer
-        stalls the collection loudly instead; a bound, if ever wanted, belongs
-        to the supervisor that owns the collection window. Full argument in
-        README.md, pinned by tests/test_render_contract.py.
+        Three outcomes and no fourth, and each of them arrives: the repair
+        loop is bounded by the wall clock (`SEVERE_RENDER_TIMEOUT_S`), and what
+        it returns at that bound is `unknown` — not a defect of the file, not
+        silence, but a statement that this file did not render in two minutes
+        of repairs and the renderer cannot explain why.
+        Nothing downstream may show that to a model as the widget's fault —
+        it is the renderer admitting it does not know, and it exists so the
+        failure is discovered rather than waited on.
         """
         attempts = 0
         recoveries = 0
+        repairing_since: Optional[float] = None
         while True:
             generation = self._generation
             result = await self._attempt_within_deadline(
-                jsx_path, output_path, width, height, wait_extra_ms, force_resize
+                jsx_path, output_path, width, height, wait_extra_ms, force_resize,
+                freeze_animations,
             )
             if result.ok:
                 bad_png = self._png_defect(result.png_path)
@@ -375,25 +481,36 @@ class RenderService:
                 await asyncio.sleep(0.5)
                 continue
 
+            now = asyncio.get_event_loop().time()
+            if repairing_since is None:
+                repairing_since = now
+            elapsed = now - repairing_since
+            if elapsed > SEVERE_RENDER_TIMEOUT_S:
+                return RenderResult(
+                    Path(jsx_path), _png_for(jsx_path, output_path),
+                    error=(
+                        f"UnknownRenderFailure: the renderer rebuilt itself "
+                        f"{recoveries} times over {elapsed:.0f}s and this file still "
+                        f"does not render; it cannot say why. The last thing it knew was "
+                        f"{_first_line(result.error or 'nothing')}"
+                    ),
+                    error_kind="unknown",
+                    console_errors=list(result.console_errors),
+                )
             recoveries += 1
             await self._recover_infrastructure(
                 generation, reason=result.error or "", cycle=recoveries
             )
             attempts = 0
 
-            # Only after the renderer has been rebuilt and proven on a canary
-            # can a timeout be attributed to this file.
-            if result.error_kind == "timeout" and await self._canary_renders():
-                return RenderResult(
-                    Path(jsx_path), _png_for(jsx_path, output_path),
-                    error=(
-                        f"HangError: the widget never became ready within "
-                        f"{self.default_timeout_ms} ms, while a canary widget rendered "
-                        f"normally on the same renderer"
-                    ),
-                    error_kind="hang",
-                    console_errors=list(result.console_errors),
-                )
+            # A timeout is never promoted to `hang` here. The canary that used
+            # to license that promotion is a 64x64 square, and it renders
+            # perfectly well on a renderer too busy to finish a real widget:
+            # 1,822 renders fired at an eight-page pool produced 219 widgets
+            # blamed for a contention their own pages could have denied. The
+            # question is answered where it can be answered — on the page
+            # itself, in `_render_once` — and a timeout that reaches here is
+            # therefore the renderer's, and is retried.
 
     async def render_dir(
         self,
@@ -427,7 +544,8 @@ class RenderService:
     # ---- one attempt -------------------------------------------------------
 
     async def _attempt_within_deadline(
-        self, jsx_path, output_path, width, height, wait_extra_ms, force_resize
+        self, jsx_path, output_path, width, height, wait_extra_ms, force_resize,
+        freeze_animations=True,
     ) -> RenderResult:
         """One attempt, bounded by a real clock rather than by Playwright.
 
@@ -438,7 +556,8 @@ class RenderService:
         """
         budget = self.default_timeout_ms / 1000 + ATTEMPT_DEADLINE_SLACK_S
         task = asyncio.ensure_future(
-            self._render_once(jsx_path, output_path, width, height, wait_extra_ms, force_resize)
+            self._render_once(jsx_path, output_path, width, height, wait_extra_ms,
+                              force_resize, freeze_animations=freeze_animations)
         )
         if await _abandon_after(task, budget):
             return task.result()
@@ -459,6 +578,7 @@ class RenderService:
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
         force_resize: bool = True,
+        freeze_animations: bool = True,
         timeout_ms: Optional[int] = None,
     ) -> RenderResult:
         """One attempt. May return an infrastructure failure; `render` will not.
@@ -503,11 +623,15 @@ class RenderService:
         try:
             return await self._capture(
                 page, jsx, png, width, height, wait_extra_ms, force_resize,
-                timeout_ms, console_errors,
+                freeze_animations, timeout_ms, console_errors,
             )
         except Exception as e:
             reusable = False
-            return self._failure(jsx, png, e, console_errors)
+            # A readiness timeout means one of two things, and only the page
+            # itself can say which.
+            blocked = ("timeout" in f"{type(e).__name__}: {e}".lower()
+                       and not await self._page_responds(page))
+            return self._failure(jsx, png, e, console_errors, page_blocked=blocked)
         finally:
             try:
                 page.remove_listener("pageerror", _on_pageerror)
@@ -516,10 +640,33 @@ class RenderService:
                 pass
             self._release_page(page, reusable)
 
+
+    async def _page_responds(self, page: Page, timeout: float = 10.0) -> bool:
+        """Can this page still run a line of JavaScript?
+
+        The direct evidence for the difference the canary could only guess at.
+        A widget in a loop never yields its main thread, so nothing evaluates
+        on its page — that is a hang. A page merely starved of CPU answers as
+        soon as it is scheduled, however loaded the machine is, so a timeout
+        there is the renderer being oversubscribed and belongs to the retry,
+        not to the widget.
+
+        Measured: 1,822 renders fired at an eight-page pool produced 157
+        `hang` verdicts; the same widgets, eight at a time, all rendered.
+        """
+        task = asyncio.ensure_future(page.evaluate("1"))
+        if not await _abandon_after(task, timeout):
+            return False
+        try:
+            task.result()
+            return True
+        except Exception:
+            return False           # a dead page is not a hung widget either
+
     async def _capture(
         self, page: Page, jsx: Path, png: Path, width, height,
-        wait_extra_ms: int, force_resize: bool, timeout_ms: Optional[int],
-        console_errors: list[str],
+        wait_extra_ms: int, force_resize: bool, freeze_animations: bool,
+        timeout_ms: Optional[int], console_errors: list[str],
     ) -> RenderResult:
         """Navigate, wait for readiness, settle, audit, screenshot."""
         await page.set_viewport_size({
@@ -531,20 +678,49 @@ class RenderService:
         # the Vite filesystem watcher is off.
         url = f"{VITE_BASE}/?path={quote(str(jsx))}&v={jsx.stat().st_mtime_ns}"
         await page.goto(url, wait_until="domcontentloaded")
-        await page.wait_for_function(
+
+        # Playwright enforces its own timeout from inside the page, which a
+        # widget that never yields starves along with everything else — a 30s
+        # budget was measured still waiting at 300s. Bounding the wait on this
+        # side is what makes the timeout arrive at all, and arriving is what
+        # lets the page be asked whether it is blocked or merely slow.
+        budget_s = (timeout_ms or self.default_timeout_ms) / 1000
+        ready = asyncio.ensure_future(page.wait_for_function(
             "() => window.__widget_ready === true || window.__widget_error",
             timeout=timeout_ms or self.default_timeout_ms,
-        )
+        ))
+        if not await _abandon_after(ready, budget_s + 2):
+            raise TimeoutError(
+                f"the widget did not become ready within {budget_s:.0f}s"
+            )
+        ready.result()          # re-raise Playwright's own error, if any
 
         err = await page.evaluate("window.__widget_error || null")
         if err:
             message = _normalize_runtime_error(_first_line(str(err)))
+            kind = "empty" if message.startswith("EmptyRender") else "runtime"
+            if _MODULE_FETCH_FAILURE in message.lower():
+                diagnosis = await _syntax_diagnosis(jsx)
+                if diagnosis:
+                    # The console for this failure is the transport complaining
+                    # (a 500 and a resource error); with the cause in hand it
+                    # is noise, and noise is what a model has to read past.
+                    message, kind, console_errors = diagnosis, "syntax", []
             return RenderResult(
                 jsx, png,
                 error=message,
-                error_kind="empty" if message.startswith("EmptyRender") else "runtime",
-                console_errors=list(console_errors),
+                error_kind=kind,
+                console_errors=_useful_console(console_errors, message),
             )
+
+        if freeze_animations:
+            # Before force_resize and settle, so the audit and the screenshot
+            # describe the same finished state rather than two moments of a
+            # moving one.
+            try:
+                await page.add_style_tag(content=_FREEZE_ANIMATIONS_CSS)
+            except Exception:
+                pass                  # a widget that renders is worth more than this
 
         if force_resize:
             await page.evaluate(_RESIZE_JS)
@@ -575,7 +751,7 @@ class RenderService:
             render_notes=notes,
             settled=bool(settle.get("quiet")),
             settle_ms=settle_ms,
-            console_errors=list(console_errors),
+            console_errors=_useful_console(console_errors, None),
         )
 
     @staticmethod
@@ -584,6 +760,7 @@ class RenderService:
         png: Path,
         exc: Exception,
         console_errors: list[str],
+        page_blocked: bool = False,
     ) -> RenderResult:
         """Classify a render exception, preferring the page's own diagnosis.
 
@@ -599,11 +776,20 @@ class RenderService:
         elif page_error:
             error, kind = _normalize_runtime_error(page_error), "runtime"
         elif "timeout" in lowered:
-            error, kind = _first_line(raw), "timeout"
+            if page_blocked:
+                error = (
+                    f"HangError: the widget never yielded its main thread, so the "
+                    f"page could not run a single expression after "
+                    f"{_first_line(raw)}"
+                )
+                kind = "hang"
+            else:
+                error, kind = _first_line(raw), "timeout"
         else:
             error, kind = _first_line(raw), "infra"
         return RenderResult(
-            jsx, png, error=error, error_kind=kind, console_errors=list(console_errors)
+            jsx, png, error=error, error_kind=kind,
+            console_errors=_useful_console(console_errors, error),
         )
 
     @staticmethod
@@ -757,27 +943,6 @@ class RenderService:
                     )
                     await self._close_browser_pool()
                     await asyncio.sleep(delay)
-
-    async def _canary_renders(self) -> bool:
-        """Does a trivial widget render right now?
-
-        This is what separates "the widget hangs" from "the renderer hangs".
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            jsx = Path(tmp) / "canary.jsx"
-            jsx.write_text(
-                "export default function Widget() {\n"
-                "  return <div style={{width: '64px', height: '64px', "
-                "background: '#123456'}} />;\n"
-                "}\n"
-            )
-            try:
-                result = await self._render_once(
-                    jsx, jsx.with_suffix(".png"), timeout_ms=CANARY_TIMEOUT_MS
-                )
-            except Exception:
-                return False
-            return result.ok and self._png_defect(result.png_path) is None
 
     # ---- vite --------------------------------------------------------------
 

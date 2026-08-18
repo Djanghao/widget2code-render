@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 # Canonical human/LLM-readable warning derived from an `overflow` render note.
-# Surfaced verbatim to the reviser LLM via the tool wrapper in the parent project and persisted
+# Surfaced verbatim to the reviser LLM via core/tools/render.py and persisted
 # by the collection scripts, so both share a single wording.
 OVERFLOW_WARNING_TEXT = (
     "⚠ Content is too large for the widget's declared size and is "
@@ -28,7 +28,18 @@ OVERFLOW_WARNING_TEXT = (
 # pointless and the model must see it. Everything else is the renderer
 # misbehaving and is retried instead of taught. `hang` is a timeout that
 # survived a verified-healthy renderer — see RenderService.render().
-WIDGET_DEFECT_ERROR_KINDS = ("runtime", "empty", "hang")
+#
+# Every kind the render path can produce must appear either here or in the
+# infrastructure set. A kind in neither is treated as infrastructure and
+# repaired forever: `syntax` was missing from this tuple for one build, and
+# the daemon rebuilt its browser pool 18 times over a widget with an
+# unterminated string.
+WIDGET_DEFECT_ERROR_KINDS = ("runtime", "empty", "hang", "syntax")
+
+# What the renderer answers when it has run out of explanations: not the
+# widget's fault, not silence. Callers must surface it rather than feed it to a
+# model, and its appearance in a collection is a bug report about this service.
+RENDERER_FAILURE_ERROR_KINDS = ("unknown",)
 
 
 @dataclass

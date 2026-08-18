@@ -75,6 +75,7 @@ def build_request(
     height: int | None = None,
     wait_extra_ms: int = 200,
     force_resize: bool = True,
+    freeze_animations: bool = True,
 ) -> dict[str, Any]:
     """A render of code the daemon has never seen and a file it cannot read.
 
@@ -89,6 +90,7 @@ def build_request(
         "height": height,
         "wait_extra_ms": wait_extra_ms,
         "force_resize": force_resize,
+        "freeze_animations": freeze_animations,
     }
 
 

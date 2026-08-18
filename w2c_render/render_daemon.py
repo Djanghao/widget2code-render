@@ -160,6 +160,7 @@ class RenderDaemon:
                 height=request.get("height"),
                 wait_extra_ms=request.get("wait_extra_ms", 200),
                 force_resize=request.get("force_resize", True),
+                freeze_animations=request.get("freeze_animations", True),
             )
             payload = png.read_bytes() if result.ok else None
         return result, payload
@@ -174,8 +175,14 @@ class RenderDaemon:
             n_workers=self.workers, default_viewport=self.viewport
         ) as service:
             self.service = service
+            # A rollout group arrives as one burst of connects, and asyncio's
+            # default backlog of 100 drops the rest of them: 1,822 callers
+            # produced a storm of "lost the daemon" reconnects against a daemon
+            # that was alive and idle the whole time. Queue them instead — the
+            # pool decides how many render at once, and the socket should not
+            # also be deciding who gets to ask.
             server = await asyncio.start_unix_server(
-                self._handle, path=str(sock), limit=ipc.STREAM_LIMIT
+                self._handle, path=str(sock), limit=ipc.STREAM_LIMIT, backlog=4096
             )
             heartbeat = asyncio.ensure_future(self._heartbeat_loop())
             print(

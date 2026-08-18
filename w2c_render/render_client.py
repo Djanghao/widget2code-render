@@ -77,6 +77,7 @@ class RenderClient:
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
         force_resize: bool = True,
+        freeze_animations: bool = True,
     ) -> RenderResult:
         """Same two outcomes as the in-process service, across a socket.
 
@@ -90,6 +91,7 @@ class RenderClient:
             name=jsx.name, jsx_path=jsx,
             width=width, height=height,
             wait_extra_ms=wait_extra_ms, force_resize=force_resize,
+            freeze_animations=freeze_animations,
         )
 
     async def render_source(
@@ -103,6 +105,7 @@ class RenderClient:
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
         force_resize: bool = True,
+        freeze_animations: bool = True,
     ) -> RenderResult:
         """Render code the daemon cannot read from disk, and keep the PNG here.
 
@@ -115,6 +118,7 @@ class RenderClient:
             source, name=name,
             width=width, height=height,
             wait_extra_ms=wait_extra_ms, force_resize=force_resize,
+            freeze_animations=freeze_animations,
         ))
         result = ipc.wire_to_result(message)
         payload = ipc.wire_png_bytes(message)

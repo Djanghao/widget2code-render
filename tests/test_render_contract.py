@@ -36,12 +36,11 @@ def infra(jsx: Path, png: Path, kind: str = "infra") -> RenderResult:
 class ScriptedService(RenderService):
     """A service whose attempts are a list and whose repairs are counted."""
 
-    def __init__(self, script, canary=True):
+    def __init__(self, script):
         super().__init__(n_workers=1)
         self.script = list(script)
         self.attempts = 0
         self.repairs = 0
-        self.canary = canary
         self._recovery_lock = asyncio.Lock()
 
     async def _render_once(self, jsx_path, output_path=None, *args, **kwargs):
@@ -53,9 +52,6 @@ class ScriptedService(RenderService):
     async def _recover_infrastructure(self, generation, *, reason, cycle):
         self.repairs += 1
         self._generation += 1
-
-    async def _canary_renders(self):
-        return self.canary
 
 
 def run(service, tmp_path) -> RenderResult:
@@ -90,30 +86,43 @@ def test_infrastructure_noise_never_reaches_the_caller(tmp_path):
 
 
 def test_a_dead_renderer_is_rebuilt_rather_than_retried_forever(tmp_path):
-    """Twenty identical failures — retrying alone would never terminate."""
-    script = [infra] * 20 + [ok]
-    service = ScriptedService(script)
+    """Ten identical failures then a picture — retrying alone never rebuilds."""
+    service = ScriptedService([infra] * 10 + [ok])
     assert run(service, tmp_path).ok
     assert service.repairs >= 5, "each pair of failures must rebuild the pool"
 
 
-def test_a_timeout_becomes_a_defect_only_once_a_canary_has_rendered(tmp_path):
-    """With the renderer proven healthy, nothing but this file explains why it
-    never became ready — so the timeout is the file's own defect."""
-    service = ScriptedService([lambda j, p: infra(j, p, "timeout")], canary=True)
-    result = run(service, tmp_path)
-    assert result.error_kind == "hang"
-    assert result.is_widget_defect
-    assert "canary widget rendered normally" in result.error
+def test_a_hung_widget_is_convicted_by_its_own_page(tmp_path):
+    """The page that cannot run `1` is the evidence, and the only evidence.
+
+    The renderer used to license this verdict with a canary — a 64x64 square
+    that renders perfectly well on a renderer too busy to finish a real widget.
+    Fired 1,822 renders at an eight-page pool, that reasoning blamed 219
+    widgets for a contention they had nothing to do with; every one of them
+    rendered when the pool was not oversubscribed.
+    """
+    from w2c_render.render import RenderService
+
+    class Blocked(RenderService):
+        async def _page_responds(self, page, timeout=10.0):
+            return False
+
+    service = Blocked(n_workers=1)
+    result = service._failure(Path("w.jsx"), Path("w.png"),
+                              TimeoutError("Timeout 30000ms exceeded"), [], page_blocked=True)
+    assert result.error_kind == "hang" and result.is_widget_defect
+    assert "never yielded its main thread" in result.error
 
 
-def test_a_timeout_on_a_sick_renderer_keeps_being_repaired(tmp_path):
-    """The same symptom with the canary failing is the renderer, not the file."""
-    script = [lambda j, p: infra(j, p, "timeout")] * 6 + [ok]
-    service = ScriptedService(script, canary=False)
-    result = run(service, tmp_path)
-    assert result.ok, "a sick renderer must be repaired, not blamed on the widget"
-    assert service.repairs >= 3
+def test_a_timeout_on_a_responsive_page_is_the_renderers_problem(tmp_path):
+    """Slow is not hung, and only the renderer can be blamed for slow."""
+    from w2c_render.render import RenderService
+
+    result = RenderService._failure(Path("w.jsx"), Path("w.png"),
+                                    TimeoutError("Timeout 30000ms exceeded"), [],
+                                    page_blocked=False)
+    assert result.error_kind == "timeout"
+    assert not result.is_widget_defect, "contention must never reach the caller"
 
 
 def test_a_corrupt_screenshot_is_this_process_failing_not_the_widget(tmp_path):
@@ -129,21 +138,32 @@ def test_a_corrupt_screenshot_is_this_process_failing_not_the_widget(tmp_path):
     assert service.repairs == 1
 
 
-def test_every_outcome_is_one_of_the_two(tmp_path):
-    """The whole contract in one assertion, over every scripted prefix."""
+def test_every_outcome_is_one_of_the_three(tmp_path, monkeypatch):
+    """The whole contract in one assertion, over every scripted prefix.
+
+    A picture, a defect of the widget, or — when the renderer has run out of
+    explanations — `unknown`. The last is not a fourth kind of answer so much
+    as the refusal to give none: an endless timeout used to be promoted to
+    `hang` on a canary's word, which named the widget for the renderer's
+    problem.
+    """
+    import w2c_render.render as render_module
     from w2c_render.render import WIDGET_DEFECT_ERROR_KINDS
 
+    monkeypatch.setattr(render_module, "SEVERE_RENDER_TIMEOUT_S", 1.0)
     scripts = [
         [ok],
         [lambda j, p: defect(j, p, "runtime")],
         [lambda j, p: defect(j, p, "empty")],
+        [lambda j, p: defect(j, p, "syntax")],
         [infra, ok],
         [infra, infra, infra, ok],
         [lambda j, p: infra(j, p, "timeout")],
     ]
     for script in scripts:
         result = run(ScriptedService(script), tmp_path)
-        assert result.ok or result.error_kind in WIDGET_DEFECT_ERROR_KINDS, result.error_kind
+        assert result.ok or result.error_kind in WIDGET_DEFECT_ERROR_KINDS \
+            or result.error_kind == "unknown", result.error_kind
 
 
 def test_a_success_carries_everything_the_caller_reads_from_it(tmp_path):
@@ -187,28 +207,6 @@ def test_a_defect_carries_its_message_and_the_console_that_explains_it(tmp_path)
     result = run(service, tmp_path)
     assert result.error == "ReferenceError: BedIcon is not defined"
     assert result.console_errors == ["pageerror: ReferenceError: BedIcon"]
-
-
-def test_the_canary_does_not_shorten_renders_running_beside_it(tmp_path):
-    """The canary needs a short readiness budget. Taking it from the shared
-    attribute would have handed that budget to every render in flight."""
-    seen: list[int | None] = []
-
-    class Recorder(ScriptedService):
-        async def _render_once(self, jsx_path, output_path=None, *args, timeout_ms=None, **kw):
-            seen.append(timeout_ms)
-            return await super()._render_once(jsx_path, output_path)
-
-        async def _canary_renders(self):
-            await self._render_once(tmp_path / "c.jsx", tmp_path / "c.png", timeout_ms=15_000)
-            return True
-
-    service = Recorder([lambda j, p: infra(j, p, "timeout")])
-    service.default_timeout_ms = 30_000
-    run(service, tmp_path)
-    assert seen[0] is None, "the real render keeps the service default"
-    assert 15_000 in seen, "the canary passes its own budget instead of mutating state"
-    assert service.default_timeout_ms == 30_000, "shared state is untouched"
 
 
 def test_liveness_is_answering_http_not_holding_a_socket(monkeypatch):
@@ -257,35 +255,39 @@ def test_a_vite_that_answers_nothing_is_replaced_even_if_we_did_not_start_it(mon
     assert service._owns_vite is True, "a dead server is replaced and adopted"
 
 
-def test_the_renderer_never_gives_up(tmp_path):
-    """Unbounded repair is a decision, not an oversight.
+def test_the_renderer_answers_even_when_it_cannot_explain_itself(tmp_path, monkeypatch):
+    """Three outcomes and no fourth — silence is not one of them.
 
-    A bounded renderer has to answer something once its bound is reached, and
-    every answer contaminates the data: infrastructure noise returned as the
-    widget's fault, or an episode quietly dropped. Either way the renderer is
-    deciding what enters the dataset. Stalling loudly is the one failure that
-    costs time instead of data.
-
-    A bound belongs to whatever owns the collection window — and it must stop
-    the window rather than answer a render.
+    Repairing forever was the earlier answer, on the reasoning that any reply
+    to an unexplained failure contaminates the data. But a call that never
+    returns contaminates it too, and takes the collection with it: nothing
+    downstream can tell a stalled renderer from a slow one. So the wall clock
+    bounds it, and what comes back names what happened under a kind no caller
+    can mistake for a defect of the widget.
     """
-    import inspect
-
     import w2c_render.render as render_module
+    from w2c_render.render import WIDGET_DEFECT_ERROR_KINDS
 
-    source = inspect.getsource(render_module)
-    assert "MAX_RECOVERY_CYCLES" not in source
-    assert "recovery exhausted" not in source
-    # Fifty consecutive failures then a picture: the caller still gets the
-    # picture, and no exception on the way.
-    service = ScriptedService([infra] * 50 + [ok])
+    monkeypatch.setattr(render_module, "SEVERE_RENDER_TIMEOUT_S", 0.0)
+    service = ScriptedService([infra] * 500)
+    result = run(service, tmp_path)
+    assert not result.ok
+    assert result.error_kind == "unknown"
+    assert result.error_kind not in WIDGET_DEFECT_ERROR_KINDS, (
+        "the renderer's own failure must never read as the widget's"
+    )
+    assert "cannot say why" in result.error
+
+
+def test_a_renderer_that_recovers_late_still_returns_the_picture(tmp_path):
+    """Giving up is a last resort, not an early one."""
+    service = ScriptedService([infra] * 8 + [ok])
     assert run(service, tmp_path).ok
-    assert service.repairs >= 20
 
-
-# ---- whose console error is this? ------------------------------------------
 
 class FakeConsoleMessage:
+    """Playwright's console message, reduced to what ownership is decided on."""
+
     def __init__(self, text, url=""):
         self.type = "error"
         self.text = text
@@ -325,3 +327,40 @@ def test_the_old_rule_kept_foreign_errors_that_never_said_vite():
 
     source = inspect.getsource(render_module)
     assert '"vite" not in text.lower()' not in source
+
+
+def test_every_kind_the_render_path_produces_is_classified():
+    """A kind in neither set is treated as infrastructure and repaired forever.
+
+    `syntax` was missing from WIDGET_DEFECT_ERROR_KINDS for one build, and the
+    daemon rebuilt its browser pool 18 times over a widget with an unterminated
+    string literal — the widget was never rendered and the caller never
+    answered.
+    """
+    import re
+
+    import w2c_render.render as render_module
+    from w2c_render.render import WIDGET_DEFECT_ERROR_KINDS
+
+    source = inspect_source(render_module)
+    produced = set(re.findall(r'error_kind=["\'](\w+)["\']', source))
+    produced |= set(re.findall(r'kind = ["\'](\w+)["\']', source))
+    produced |= set(re.findall(r'["\'](\w+)["\'], "(?:infra|timeout)"', source))
+    from w2c_render.render_result import RENDERER_FAILURE_ERROR_KINDS
+    infrastructure = {"infra", "timeout"} | set(RENDERER_FAILURE_ERROR_KINDS)
+    unclassified = produced - set(WIDGET_DEFECT_ERROR_KINDS) - infrastructure
+    assert not unclassified, f"unclassified error kinds: {sorted(unclassified)}"
+
+
+def test_a_syntax_error_is_the_widgets_own_defect():
+    """It reproduces on every attempt, so retrying it is a loop."""
+    from w2c_render.render import RenderResult
+
+    result = RenderResult(Path("w.jsx"), Path("w.png"),
+                          error='SyntaxError at line 2:0 — Expected ">"', error_kind="syntax")
+    assert result.is_widget_defect
+
+
+def inspect_source(module):
+    import inspect
+    return inspect.getsource(module)
