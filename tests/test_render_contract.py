@@ -281,3 +281,47 @@ def test_the_renderer_never_gives_up(tmp_path):
     service = ScriptedService([infra] * 50 + [ok])
     assert run(service, tmp_path).ok
     assert service.repairs >= 20
+
+
+# ---- whose console error is this? ------------------------------------------
+
+class FakeConsoleMessage:
+    def __init__(self, text, url=""):
+        self.type = "error"
+        self.text = text
+        self.location = {"url": url}
+
+
+def test_a_console_error_naming_another_widget_is_not_ours():
+    """One Vite server serves the whole pool, so a failure belonging to another
+    render can surface on this page. The message that does it most often names
+    no file in its text — only in its location."""
+    from w2c_render.render import _belongs_to
+
+    foreign_500 = FakeConsoleMessage(
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        url="http://127.0.0.1:5173/@fs/tmp/w2c-render-abc/broken.jsx?v=1",
+    )
+    assert not _belongs_to(foreign_500, "mine.jsx"), (
+        "a resource error for another widget was recorded against this one"
+    )
+    assert _belongs_to(FakeConsoleMessage("boom", url="http://127.0.0.1:5173/@fs/x/mine.jsx"), "mine.jsx")
+
+
+def test_an_error_that_names_no_widget_is_kept():
+    """On this page it can only be ours, and dropping it would empty the
+    diagnostics for every runtime failure that mentions no filename."""
+    from w2c_render.render import _belongs_to
+
+    assert _belongs_to(FakeConsoleMessage("ReferenceError: X is not defined"), "mine.jsx")
+
+
+def test_the_old_rule_kept_foreign_errors_that_never_said_vite():
+    """The previous rule kept anything without the word "vite" in it, which is
+    every foreign resource error. Pinned so it does not come back."""
+    import inspect
+
+    import w2c_render.render as render_module
+
+    source = inspect.getsource(render_module)
+    assert '"vite" not in text.lower()' not in source

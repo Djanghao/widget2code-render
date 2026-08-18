@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -104,6 +105,27 @@ _RESIZE_JS = (RENDERER_DIR / "resize.js").read_text()
 
 
 # ---- small helpers ---------------------------------------------------------
+
+_JSX_MENTION = re.compile(r"[\w.-]+\.jsx")
+
+
+def _belongs_to(msg, jsx_name: str) -> bool:
+    """Is this console error about the widget we are rendering?
+
+    One Vite server serves every page in the pool, so a failure belonging to
+    another render can surface here — and the message that does it most often
+    ("Failed to load resource: … 500") names no file at all in its text. Its
+    *location* does, which is why the URL is consulted first.
+
+    Deciding by which file a message names is what the previous rule got
+    wrong: it kept anything that did not contain the word "vite", which is
+    every foreign resource error. A message that names no widget at all is
+    kept, because on this page it can only be ours.
+    """
+    location = (getattr(msg, "location", None) or {}).get("url", "")
+    named = set(_JSX_MENTION.findall(location)) or set(_JSX_MENTION.findall(msg.text))
+    return not named or jsx_name in named
+
 
 def _first_line(text: str) -> str:
     return text.split("\n")[0].strip()
@@ -463,7 +485,6 @@ class RenderService:
         # calls. Vite's HMR socket broadcasts compile errors of any file to
         # every open page, so console events are filtered to THIS file.
         console_errors: list[str] = []
-        stem = jsx.stem
         # A page that failed may still be running the widget's loop; returning
         # it to the pool would hand that wait to the next caller.
         reusable = True
@@ -474,9 +495,8 @@ class RenderService:
         def _on_console(msg):
             if msg.type != "error":
                 return
-            text = msg.text
-            if stem in text or "vite" not in text.lower():
-                console_errors.append(f"console.error: {text}")
+            if _belongs_to(msg, jsx.name):
+                console_errors.append(f"console.error: {msg.text}")
 
         page.on("pageerror", _on_pageerror)
         page.on("console", _on_console)
