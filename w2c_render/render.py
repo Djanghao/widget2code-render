@@ -46,6 +46,7 @@ from .render_result import (  # noqa: F401
     WIDGET_DEFECT_ERROR_KINDS,
     RenderResult,
 )
+from .source_policy import SourcePolicy
 
 PathLike = Union[str, Path]
 
@@ -340,6 +341,7 @@ class RenderService:
         default_viewport: tuple[int, int] = (1920, 1080),
         default_timeout_ms: int = 30000,
         settle_budget_ms: int = 3000,
+        source_policy: SourcePolicy | None = None,
     ):
         self.n_workers = n_workers
         self.default_viewport = default_viewport
@@ -347,6 +349,7 @@ class RenderService:
         # Upper bound on the post-render quiescence wait; measured p99 is
         # ~265ms, so this only bounds pathological pages.
         self.settle_budget_ms = settle_budget_ms
+        self.source_policy = source_policy or SourcePolicy()
 
         self._vite_proc: Optional[subprocess.Popen] = None
         self._owns_vite = False
@@ -452,6 +455,28 @@ class RenderService:
         it is the renderer admitting it does not know, and it exists so the
         failure is discovered rather than waited on.
         """
+        jsx = Path(jsx_path)
+        try:
+            source = jsx.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return self._attach_policy(
+                RenderResult(
+                    jsx,
+                    _png_for(jsx_path, output_path),
+                    error=f"SourcePolicyError: cannot read UTF-8 JSX: {exc}",
+                    error_kind="policy",
+                )
+            )
+        violation = self.source_policy.violation(source)
+        if violation is not None:
+            return self._attach_policy(
+                RenderResult(
+                    jsx,
+                    _png_for(jsx_path, output_path),
+                    error=f"SourcePolicyError: {violation}",
+                    error_kind="policy",
+                )
+            )
         attempts = 0
         recoveries = 0
         repairing_since: Optional[float] = None
@@ -464,7 +489,7 @@ class RenderService:
             if result.ok:
                 bad_png = self._png_defect(result.png_path)
                 if bad_png is None:
-                    return result
+                    return self._attach_policy(result)
                 # A screenshot that is not a PNG is this process failing, not
                 # the widget: take the same repair path.
                 result = RenderResult(
@@ -474,7 +499,7 @@ class RenderService:
                     console_errors=list(result.console_errors),
                 )
             if result.is_widget_defect:
-                return result
+                return self._attach_policy(result)
 
             attempts += 1
             if attempts < RENDER_ATTEMPTS_BEFORE_RECOVERY:
@@ -486,7 +511,7 @@ class RenderService:
                 repairing_since = now
             elapsed = now - repairing_since
             if elapsed > SEVERE_RENDER_TIMEOUT_S:
-                return RenderResult(
+                return self._attach_policy(RenderResult(
                     Path(jsx_path), _png_for(jsx_path, output_path),
                     error=(
                         f"UnknownRenderFailure: the renderer rebuilt itself "
@@ -496,7 +521,7 @@ class RenderService:
                     ),
                     error_kind="unknown",
                     console_errors=list(result.console_errors),
-                )
+                ))
             recoveries += 1
             await self._recover_infrastructure(
                 generation, reason=result.error or "", cycle=recoveries
@@ -511,6 +536,10 @@ class RenderService:
             # question is answered where it can be answered — on the page
             # itself, in `_render_once` — and a timeout that reaches here is
             # therefore the renderer's, and is retried.
+
+    def _attach_policy(self, result: RenderResult) -> RenderResult:
+        result.source_policy = self.source_policy.descriptor()
+        return result
 
     async def render_dir(
         self,

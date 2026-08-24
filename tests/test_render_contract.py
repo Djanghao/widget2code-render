@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from w2c_render.render import OVERFLOW_WARNING_TEXT, RenderResult, RenderService
+from w2c_render.source_policy import SourcePolicy
 
 
 def ok(jsx: Path, png: Path) -> RenderResult:
@@ -64,6 +65,29 @@ def test_a_clean_render_is_returned_as_is(tmp_path):
     service = ScriptedService([ok])
     assert run(service, tmp_path).ok
     assert service.repairs == 0
+
+
+def test_source_policy_rejects_an_import_before_a_browser_attempt(tmp_path):
+    service = ScriptedService([ok])
+    jsx = tmp_path / "w.jsx"
+    jsx.write_text("import React from 'react'; export default function Widget(){}")
+    result = asyncio.run(service.render(jsx, tmp_path / "w.png"))
+    assert result.error_kind == "policy" and result.is_widget_defect
+    assert service.attempts == 0
+    assert result.source_policy["allowed_imports"] == []
+
+
+def test_source_policy_can_enable_a_frozen_package_family(tmp_path):
+    service = ScriptedService([ok])
+    service.source_policy = SourcePolicy(("react-icons/*",))
+    jsx = tmp_path / "w.jsx"
+    jsx.write_text(
+        "import { LuSearch } from 'react-icons/lu'; "
+        "export default function Widget(){return <LuSearch/>}"
+    )
+    result = asyncio.run(service.render(jsx, tmp_path / "w.png"))
+    assert result.ok and service.attempts == 1
+    assert result.source_policy["allowed_imports"] == ["react-icons/*"]
 
 
 @pytest.mark.parametrize("kind", ["runtime", "empty"])

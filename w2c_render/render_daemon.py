@@ -36,6 +36,11 @@ if str(ROOT) not in sys.path:
 
 from w2c_render.render import RenderService  # noqa: E402
 from w2c_render import render_ipc as ipc  # noqa: E402
+from w2c_render.source_policy import (  # noqa: E402
+    SourcePolicy,
+    source_policy_from_values,
+    write_source_policy,
+)
 
 
 HEARTBEAT_INTERVAL_S = 5.0
@@ -44,10 +49,18 @@ HEARTBEAT_INTERVAL_S = 5.0
 class RenderDaemon:
     """One RenderService, many callers, and a pulse a supervisor can read."""
 
-    def __init__(self, *, runtime_dir: Path, workers: int, viewport: tuple[int, int]):
+    def __init__(
+        self,
+        *,
+        runtime_dir: Path,
+        workers: int,
+        viewport: tuple[int, int],
+        source_policy: SourcePolicy | None = None,
+    ):
         self.runtime_dir = runtime_dir
         self.workers = workers
         self.viewport = viewport
+        self.source_policy = source_policy or SourcePolicy()
         self.service: RenderService | None = None
         self._in_flight = 0
         self._completed = 0
@@ -73,6 +86,7 @@ class RenderDaemon:
             "in_flight": self._in_flight,
             "completed": self._completed,
             "generation": self.service._generation if self.service else -1,
+            "source_policy": self.source_policy.descriptor(),
         }
         path = ipc.heartbeat_path(self.runtime_dir)
         tmp = path.with_suffix(".tmp")
@@ -167,12 +181,15 @@ class RenderDaemon:
 
     async def run(self) -> None:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        write_source_policy(ipc.source_policy_path(self.runtime_dir), self.source_policy)
         sock = ipc.socket_path(self.runtime_dir)
         if sock.exists():
             sock.unlink()
 
         async with RenderService(
-            n_workers=self.workers, default_viewport=self.viewport
+            n_workers=self.workers,
+            default_viewport=self.viewport,
+            source_policy=self.source_policy,
         ) as service:
             self.service = service
             # A rollout group arrives as one burst of connects, and asyncio's
@@ -187,7 +204,8 @@ class RenderDaemon:
             heartbeat = asyncio.ensure_future(self._heartbeat_loop())
             print(
                 f"render-daemon: listening on {sock} "
-                f"(pid {os.getpid()}, {self.workers} workers)",
+                f"(pid {os.getpid()}, {self.workers} workers, "
+                f"{self.source_policy.policy_id})",
                 flush=True,
             )
             try:
@@ -212,12 +230,25 @@ def main() -> int:
     parser.add_argument("--runtime-dir", type=Path, default=ipc.DEFAULT_RUNTIME_DIR)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--viewport", type=int, nargs=2, default=(1920, 1080))
+    parser.add_argument(
+        "--allow-import",
+        action="append",
+        default=[],
+        help="Allowed bare package or package/* pattern; repeat or comma-separate.",
+    )
+    parser.add_argument("--allow-dynamic-imports", action="store_true")
     args = parser.parse_args()
+
+    policy = source_policy_from_values(
+        args.allow_import,
+        allow_dynamic_imports=args.allow_dynamic_imports,
+    )
 
     daemon = RenderDaemon(
         runtime_dir=args.runtime_dir,
         workers=args.workers,
         viewport=tuple(args.viewport),
+        source_policy=policy,
     )
 
     async def _run() -> None:

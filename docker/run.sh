@@ -2,6 +2,7 @@
 # Run the containerized render daemon (self-check first, then serve).
 #
 #   docker/run.sh [workers]
+#   W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' docker/run.sh [workers]
 #
 # The only mount is /tmp/w2c-render, the socket and heartbeat: source and
 # screenshot both travel over the socket, so the daemon needs no access to the
@@ -23,7 +24,8 @@ mkdir -p /tmp/w2c-render
 docker rm -f "$NAME" 2>/dev/null || true
 # A stale socket from a previous container would fool the readiness wait
 # below (and may be owned by another uid); the daemon binds a fresh one.
-rm -f /tmp/w2c-render/render.sock /tmp/w2c-render/heartbeat.json
+rm -f /tmp/w2c-render/render.sock /tmp/w2c-render/heartbeat.json \
+  /tmp/w2c-render/source_policy.json
 # --user: run as the invoking host user, not root — the socket has to be
 # connectable by the caller. HOME=/tmp gives Chromium/fontconfig a writable
 # home for their caches.
@@ -34,6 +36,8 @@ docker run -d --name "$NAME" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e W2C_RENDER_WORKERS="$WORKERS" \
+  -e W2C_RENDER_ALLOWED_IMPORTS="${W2C_RENDER_ALLOWED_IMPORTS:-}" \
+  -e W2C_RENDER_ALLOW_DYNAMIC_IMPORTS="${W2C_RENDER_ALLOW_DYNAMIC_IMPORTS:-}" \
   -v /tmp/w2c-render:/tmp/w2c-render \
   "$IMAGE"
 

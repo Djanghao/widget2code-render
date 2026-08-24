@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from w2c_render import render_ipc as ipc  # noqa: E402
+from w2c_render.source_policy import source_policy_from_values  # noqa: E402
 
 
 def read_heartbeat(path: Path) -> dict | None:
@@ -83,7 +84,27 @@ def main() -> int:
         help="Seconds without a heartbeat tick before a restart.",
     )
     parser.add_argument("--poll", type=float, default=5.0)
+    parser.add_argument(
+        "--allow-import",
+        action="append",
+        default=[],
+        help="Allowed bare package or package/* pattern; repeat or comma-separate. "
+        "Also reads W2C_RENDER_ALLOWED_IMPORTS.",
+    )
+    parser.add_argument(
+        "--allow-dynamic-imports",
+        action="store_true",
+        default=os.environ.get("W2C_RENDER_ALLOW_DYNAMIC_IMPORTS", "").lower()
+        in {"1", "true", "yes"},
+    )
     args = parser.parse_args()
+    policy_values = list(args.allow_import)
+    if os.environ.get("W2C_RENDER_ALLOWED_IMPORTS"):
+        policy_values.append(os.environ["W2C_RENDER_ALLOWED_IMPORTS"])
+    source_policy = source_policy_from_values(
+        policy_values,
+        allow_dynamic_imports=args.allow_dynamic_imports,
+    )
 
     args.runtime_dir.mkdir(parents=True, exist_ok=True)
     heartbeat = ipc.heartbeat_path(args.runtime_dir)
@@ -109,16 +130,25 @@ def main() -> int:
                         flush=True,
                     )
                 heartbeat.unlink(missing_ok=True)
+                daemon_command = [
+                    sys.executable, "-u", "-m", "w2c_render.render_daemon",
+                    "--runtime-dir", str(args.runtime_dir),
+                    "--workers", str(args.workers),
+                ]
+                for pattern in source_policy.allowed_imports:
+                    daemon_command.extend(("--allow-import", pattern))
+                if source_policy.allow_dynamic_imports:
+                    daemon_command.append("--allow-dynamic-imports")
                 proc = subprocess.Popen(
-                    [
-                        sys.executable, "-u", "-m", "w2c_render.render_daemon",
-                        "--runtime-dir", str(args.runtime_dir),
-                        "--workers", str(args.workers),
-                    ],
+                    daemon_command,
                     cwd=str(ROOT),
                     start_new_session=True,
                 )
-                print(f"supervisor: started daemon pid {proc.pid}", flush=True)
+                print(
+                    f"supervisor: started daemon pid {proc.pid} "
+                    f"with {source_policy.policy_id}",
+                    flush=True,
+                )
                 # Give it room to boot before judging its pulse.
                 deadline = time.time() + args.silence_timeout
                 while time.time() < deadline and proc.poll() is None:

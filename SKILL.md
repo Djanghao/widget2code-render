@@ -23,9 +23,14 @@ to install, and no per-call startup cost.
 ```bash
 docker run -d --name w2c-render --restart unless-stopped --init --shm-size=2g \
   --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' \
   -v /tmp/w2c-render:/tmp/w2c-render \
   houstonzhang/w2c-render:latest
 ```
+
+Omit `W2C_RENDER_ALLOWED_IMPORTS` for the default no-import contract. Use exact comma-separated
+packages or package-subpath patterns such as `react-icons/*`; only dependencies baked into the
+image can resolve. `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS=1` separately permits literal dynamic imports.
 
 Or from a checkout, which also waits until the socket answers:
 
@@ -52,6 +57,8 @@ machine whose pixels deviate stops rather than quietly producing different ones.
 | `W2C_RENDER_WORKERS` | `8` | browser contexts, i.e. concurrent renders |
 | `W2C_RENDER_IMAGE` | `w2c-render:latest` | image `docker/run.sh` starts |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | where the socket and heartbeat live |
+| `W2C_RENDER_ALLOWED_IMPORTS` | empty | comma-separated bare packages or `package/*` patterns |
+| `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS` | empty | `1/true/yes` permits literal dynamic imports, still allowlisted |
 
 Workers cost memory, not GPU - the renderer never uses CUDA. Size it against
 your rollout concurrency.
@@ -89,16 +96,17 @@ a path. `render_dir(dir, ...)` renders every `.jsx` in a directory.
 result.ok             # True iff a PNG was written
 result.png_path
 result.error          # set only when no PNG was produced
-result.error_kind     # runtime | empty | hang | infra | timeout
+result.error_kind     # runtime | empty | hang | syntax | policy | infra | timeout | unknown
 result.console_errors # diagnostics on both paths
 result.render_notes   # measured facts the picture cannot show, e.g. overflow
 result.settled, result.settle_ms
+result.source_policy   # policy_id, allowed_imports, dynamic-import flag
 ```
 
 `error_kind` is the field that matters when a render feeds a model: `runtime`,
-`empty` and `hang` are defects of the widget and belong in feedback to whoever
-wrote it; `infra` and `timeout` are properties of the rendering process and must
-not be reported as the code's fault - they mean retry, not penalise.
+`empty`, `hang`, `syntax`, and `policy` are defects of the widget and belong in feedback to whoever
+wrote it; `infra`, `timeout`, and `unknown` are properties of the rendering process and must
+not be reported as the code's fault - they mean retry or investigate, not penalise.
 
 A widget that renders but overflows its box still has `ok=True`; look in
 `render_notes` for it.
@@ -113,3 +121,5 @@ A widget that renders but overflows its box still has `ok=True`; look in
 | pixels differ from another machine | the images differ - compare `W2C_IMAGE_STAMP`, and pin the digest |
 
 Pin the digest, not the tag, when a run has to be provably the same renderer.
+Also record `result.source_policy["policy_id"]` (or the identical
+`/tmp/w2c-render/source_policy.json`), because one image can serve different startup profiles.
