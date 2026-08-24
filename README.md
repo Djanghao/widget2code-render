@@ -189,12 +189,14 @@ Determinism is then whatever the host provides.
 w2c_render/render.py          Vite + Playwright pool, self-repairing
 w2c_render/render_result.py   result contract          (stdlib)
 w2c_render/source_policy.py   startup-frozen import contract (stdlib)
+w2c_render/syntax.py          localized JSX syntax diagnosis (stdlib + frozen esbuild)
 w2c_render/render_ipc.py      wire format              (stdlib)
 w2c_render/render_client.py   client, make_renderer    (stdlib)
 w2c_render/render_daemon.py   socket server + heartbeat
 w2c_render/supervisor.py      restarts a wedged daemon
 renderer/                     Vite + React project
 renderer/{audit,settle,resize}.js   programs run inside the page
+renderer/syntax_check.mjs     syntax-only esbuild bridge
 docker/                       image, canaries, checksums, build/run/publish
 tests/                        contract, wire, fault injection, workload shapes
 ```
@@ -211,7 +213,7 @@ python tests/simulate_render_faults.py       # real Vite + Chromium, faults inje
 python tests/simulate_render_workloads.py    # batch, multi-turn, rollout burst
 ```
 
-Faults covered: source-policy rejection, browser killed mid-render, Vite killed, a widget that never
+Faults covered: source-policy/syntax rejection, browser killed mid-render, Vite killed, a widget that never
 yields its main thread, 9-way concurrency losing the browser, daemon killed
 mid-render.
 
