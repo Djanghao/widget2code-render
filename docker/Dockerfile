@@ -62,7 +62,7 @@ COPY docker/golden/ docker/golden/
 COPY docker/golden.json docker/golden.json
 
 # Warm Vite once here so a container start never pays for it: the dependency
-# pre-bundle (esbuild over react/echarts/recharts) is the slow part of a cold
+# pre-bundle (esbuild over react/echarts/recharts/react-icons) is the slow part of a cold
 # start, and baking it in turns a multi-minute first start on a loaded machine
 # into seconds. Then make the tree writable — the container runs as the
 # invoking host user (run.sh --user), and Vite writes its dep cache and

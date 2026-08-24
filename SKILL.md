@@ -52,6 +52,7 @@ machine whose pixels deviate stops rather than quietly producing different ones.
 | `W2C_RENDER_WORKERS` | `8` | browser contexts, i.e. concurrent renders |
 | `W2C_RENDER_IMAGE` | `w2c-render:latest` | image `docker/run.sh` starts |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | where the socket and heartbeat live |
+| `W2C_RENDER_ALLOW_REACT_ICONS` | `0` | set to `1` to allow static `react-icons/*` imports |
 
 Workers cost memory, not GPU - the renderer never uses CUDA. Size it against
 your rollout concurrency.

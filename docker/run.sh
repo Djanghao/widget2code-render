@@ -2,6 +2,7 @@
 # Run the containerized render daemon (self-check first, then serve).
 #
 #   docker/run.sh [workers]
+#   W2C_RENDER_ALLOW_REACT_ICONS=1 docker/run.sh [workers]
 #
 # The only mount is /tmp/w2c-render, the socket and heartbeat: source and
 # screenshot both travel over the socket, so the daemon needs no access to the
@@ -34,6 +35,7 @@ docker run -d --name "$NAME" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e W2C_RENDER_WORKERS="$WORKERS" \
+  -e W2C_RENDER_ALLOW_REACT_ICONS="${W2C_RENDER_ALLOW_REACT_ICONS:-0}" \
   -v /tmp/w2c-render:/tmp/w2c-render \
   "$IMAGE"
 

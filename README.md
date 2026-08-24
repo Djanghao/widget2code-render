@@ -151,8 +151,10 @@ both ends (asyncio's default 64 KB fails on large widgets only), and decoding.
 export default function Widget() { return (...) }
 ```
 
-No imports — `React`, `ReactECharts`, `echarts`, `Recharts` are on `window`.
-Renders at the size the code declares; overflow is clipped at the edge.
+No imports by default — `React`, `ReactECharts`, `echarts`, `Recharts` are on `window`.
+Start with `W2C_RENDER_ALLOW_REACT_ICONS=1 docker/run.sh` to allow static imports from
+`react-icons` and its subpaths, such as `react-icons/lu`. Renders at the size the code
+declares; overflow is clipped at the edge.
 
 ## Without Docker
 
