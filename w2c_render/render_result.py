@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Canonical human/LLM-readable warning derived from an `overflow` render note.
 # Surfaced verbatim to the reviser LLM via core/tools/render.py and persisted
@@ -34,7 +34,7 @@ OVERFLOW_WARNING_TEXT = (
 # repaired forever: `syntax` was missing from this tuple for one build, and
 # the daemon rebuilt its browser pool 18 times over a widget with an
 # unterminated string.
-WIDGET_DEFECT_ERROR_KINDS = ("runtime", "empty", "hang", "syntax")
+WIDGET_DEFECT_ERROR_KINDS = ("runtime", "empty", "hang", "syntax", "policy")
 
 # What the renderer answers when it has run out of explanations: not the
 # widget's fault, not silence. Callers must surface it rather than feed it to a
@@ -51,7 +51,7 @@ class RenderResult:
     errors stay in `console_errors` as diagnostics on both paths.
 
     `error_kind` separates what the widget's author can fix from what only the
-    operator can: `runtime` / `empty` / `hang` are deterministic widget defects
+    operator can: `runtime` / `empty` / `hang` / `syntax` / `policy` are deterministic widget defects
     and belong in model feedback; `infra` / `timeout` are properties of the
     rendering process and never leave `RenderService.render()`.
 
@@ -70,6 +70,7 @@ class RenderResult:
     render_notes: list[dict] = field(default_factory=list)
     settled: bool = False
     settle_ms: int = 0
+    source_policy: Optional[dict[str, Any]] = None
 
     @property
     def ok(self) -> bool:

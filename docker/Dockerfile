@@ -71,21 +71,6 @@ COPY docker/golden.json docker/golden.json
 # Never fatal. A build that dies because the warm-up was OOM-killed on a busy
 # machine fails for a reason that has nothing to do with what it is building:
 # the image renders identically either way, only its first start is slower.
-RUN cd renderer && npm ci --no-audit --no-fund
-
-COPY renderer/ renderer/
-COPY w2c_render/ w2c_render/
-COPY .claude/skills/ .claude/skills/
-COPY docker/selfcheck.py docker/selfcheck.py
-COPY docker/golden/ docker/golden/
-COPY docker/golden.json docker/golden.json
-
-# Warm Vite once here so a container start never pays for it: the dependency
-# pre-bundle (esbuild over react/echarts/recharts) is the slow part of a cold
-# start, and baking it in turns a multi-minute first start on a loaded machine
-# into seconds. Then make the tree writable — the container runs as the
-# invoking host user (run.sh --user), and Vite writes its dep cache and
-# config-bundle staging inside node_modules.
 RUN cd renderer && \
     (node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5199 --strictPort & \
      VPID=$!; \
@@ -94,7 +79,12 @@ RUN cd renderer && \
          2>/dev/null && break; \
        sleep 1; \
      done; \
-     kill $VPID 2>/dev/null; wait $VPID 2>/dev/null; true) || true; \
+     kill -TERM $VPID 2>/dev/null; \
+     for _ in $(seq 1 20); do \
+       kill -0 $VPID 2>/dev/null || break; \
+       sleep 0.25; \
+     done; \
+     kill -KILL $VPID 2>/dev/null; wait $VPID 2>/dev/null; true) || true; \
     chmod -R a+rwX /opt/w2c/renderer
 
 # The daemon's socket + heartbeat live here; mount the same path from the host

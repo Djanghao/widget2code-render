@@ -35,6 +35,12 @@ def test_everything_a_caller_reads_survives_the_wire():
         settled=True,
         settle_ms=265,
         console_errors=["console.error: noisy"],
+        source_policy={
+            "policy_id": "source_policy_test",
+            "schema_version": 1,
+            "allowed_imports": ["react-icons/*"],
+            "allow_dynamic_imports": False,
+        },
     )
     restored = ipc.wire_to_result(ipc.decode(ipc.encode(ipc.result_to_wire(original))))
     assert restored.ok and restored.error_kind is None
@@ -42,6 +48,7 @@ def test_everything_a_caller_reads_survives_the_wire():
     assert restored.settled and restored.settle_ms == 265
     assert restored.has_overflow and restored.overflow_warning == OVERFLOW_WARNING_TEXT
     assert restored.console_errors == original.console_errors
+    assert restored.source_policy == original.source_policy
     assert restored.png_path == original.png_path
 
 
@@ -277,4 +284,5 @@ def test_the_heartbeat_carries_what_the_decision_needs(tmp_path):
     for field in ("pid", "now", "last_completed_at", "in_flight", "completed"):
         assert field in beat, field
     assert beat["in_flight"] == 2
+    assert beat["source_policy"]["allowed_imports"] == []
     assert diagnose(beat, now=time.time(), stall_s=600, silence_s=60) is None

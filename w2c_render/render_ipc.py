@@ -58,6 +58,10 @@ def heartbeat_path(runtime_dir: Path | None = None) -> Path:
     return (runtime_dir or DEFAULT_RUNTIME_DIR) / "heartbeat.json"
 
 
+def source_policy_path(runtime_dir: Path | None = None) -> Path:
+    return (runtime_dir or DEFAULT_RUNTIME_DIR) / "source_policy.json"
+
+
 def encode(message: Mapping[str, Any]) -> bytes:
     """One JSON object per line: framing a supervisor can also read by eye."""
     return (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
@@ -118,6 +122,7 @@ def result_to_wire(result: RenderResult, *, png_bytes: bytes | None = None) -> d
         "settle_ms": result.settle_ms,
         "has_overflow": result.has_overflow,
         "overflow_warning": result.overflow_warning,
+        "source_policy": result.source_policy,
     }
     if png_bytes is not None:
         message["png_b64"] = base64.b64encode(png_bytes).decode("ascii")
@@ -140,4 +145,5 @@ def wire_to_result(message: Mapping[str, Any]) -> RenderResult:
         render_notes=list(message.get("render_notes") or []),
         settled=bool(message.get("settled")),
         settle_ms=int(message.get("settle_ms") or 0),
+        source_policy=message.get("source_policy"),
     )

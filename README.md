@@ -140,7 +140,7 @@ else:
 ```
 
 Reply fields: `error`, `error_kind`, `console_errors`, `render_notes`,
-`settled`, `settle_ms`, `has_overflow`, `overflow_warning`, `png_b64`.
+`settled`, `settle_ms`, `has_overflow`, `overflow_warning`, `source_policy`, `png_b64`.
 
 `RenderClient` adds: waiting through a daemon restart, the 64 MB stream limit on
 both ends (asyncio's default 64 KB fails on large widgets only), and decoding.
@@ -151,10 +151,27 @@ both ends (asyncio's default 64 KB fails on large widgets only), and decoding.
 export default function Widget() { return (...) }
 ```
 
-No imports by default — `React`, `ReactECharts`, `echarts`, `Recharts` are on `window`.
-Start with `W2C_RENDER_ALLOW_REACT_ICONS=1 docker/run.sh` to allow static imports from
-`react-icons` and its subpaths, such as `react-icons/lu`. Renders at the size the code
-declares; overflow is clipped at the edge.
+The default source policy allows no imports — `React`, `ReactECharts`, `echarts`, and `Recharts`
+are on `window`. Renders at the size the code declares; overflow is clipped at the edge.
+
+Import capability is frozen when the daemon starts, not selected per request. Enable only packages
+baked into the image, using exact names or a package-subpath pattern:
+
+```bash
+# default: historical no-import profile
+docker/run.sh 8
+
+# permits e.g. import { LuSearch } from 'react-icons/lu'
+W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' docker/run.sh 8
+```
+
+Static imports and re-exports outside the allowlist return `error_kind=policy` before a browser
+attempt. Relative/absolute imports are always forbidden. Dynamic `import()` is separately disabled;
+it can be enabled with `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS=1`, but still requires an allowlisted literal
+package. The effective versioned configuration is returned as `result.source_policy`, written to
+`/tmp/w2c-render/source_policy.json`, and included in the heartbeat. Pin both image digest and
+`source_policy.policy_id` for a reproducible experiment. Allowlisting a package not installed in the
+frozen image does not install it.
 
 ## Without Docker
 
@@ -171,12 +188,15 @@ Determinism is then whatever the host provides.
 ```
 w2c_render/render.py          Vite + Playwright pool, self-repairing
 w2c_render/render_result.py   result contract          (stdlib)
+w2c_render/source_policy.py   startup-frozen import contract (stdlib)
+w2c_render/syntax.py          localized JSX syntax diagnosis (stdlib + frozen esbuild)
 w2c_render/render_ipc.py      wire format              (stdlib)
 w2c_render/render_client.py   client, make_renderer    (stdlib)
 w2c_render/render_daemon.py   socket server + heartbeat
 w2c_render/supervisor.py      restarts a wedged daemon
 renderer/                     Vite + React project
 renderer/{audit,settle,resize}.js   programs run inside the page
+renderer/syntax_check.mjs     syntax-only esbuild bridge
 docker/                       image, canaries, checksums, build/run/publish
 tests/                        contract, wire, fault injection, workload shapes
 ```
@@ -193,7 +213,7 @@ python tests/simulate_render_faults.py       # real Vite + Chromium, faults inje
 python tests/simulate_render_workloads.py    # batch, multi-turn, rollout burst
 ```
 
-Faults covered: browser killed mid-render, Vite killed, a widget that never
+Faults covered: source-policy/syntax rejection, browser killed mid-render, Vite killed, a widget that never
 yields its main thread, 9-way concurrency losing the browser, daemon killed
 mid-render.
 

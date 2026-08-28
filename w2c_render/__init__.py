@@ -15,6 +15,7 @@ from .render_result import (
     RenderResult,
 )
 from .render_client import RenderClient, RenderTransportError, make_renderer
+from .syntax import SyntaxResult, check_syntax, format_syntax_error
 
 if TYPE_CHECKING:                                # for type checkers only
     from .render import RenderService
@@ -41,6 +42,9 @@ __all__ = [
     "RenderResult",
     "RenderService",
     "RenderTransportError",
+    "SyntaxResult",
     "WIDGET_DEFECT_ERROR_KINDS",
+    "check_syntax",
+    "format_syntax_error",
     "make_renderer",
 ]
