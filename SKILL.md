@@ -90,28 +90,145 @@ async with make_renderer(8) as r:             # RenderClient if the socket exist
 `render_source(source, output_path, ...)` takes the code as a string instead of
 a path. `render_dir(dir, ...)` renders every `.jsx` in a directory.
 
-## Read the result
+## What comes back
+
+`ok` decides the shape. A render carries an `image` and a `layout`, or an
+`error`, never both.
 
 ```python
-result.ok             # True iff a PNG was written
+result.ok                  # True iff a PNG was written
 result.png_path
-result.error          # set only when no PNG was produced
-result.error_kind     # runtime | empty | hang | syntax | policy | infra | timeout | unknown
-result.render_notes   # measured facts the picture cannot show, e.g. overflow
-result.feedback_text  # the one wording to put in front of a model
 result.width, result.height          # the screenshot's own size
+
+result.error               # set only when no PNG was produced
+result.error_kind          # syntax | runtime | empty | hang | policy | unknown
+
+result.render_notes        # measured facts the picture cannot show (below)
+result.feedback_text       # THE ONE STRING TO SHOW A MODEL
 result.console_errors, result.unclassified   # diagnostics; never model-facing
 result.settled, result.settle_ms
-result.source_policy   # policy_id, allowed_imports, dynamic-import flag
+result.source_policy       # policy_id, allowed_imports, dynamic-import flag
 ```
 
-`error_kind` is the field that matters when a render feeds a model: `runtime`,
-`empty`, `hang`, `syntax`, and `policy` are defects of the widget and belong in feedback to whoever
-wrote it; `infra`, `timeout`, and `unknown` are properties of the rendering process and must
-not be reported as the code's fault - they mean retry or investigate, not penalise.
+### feedback_text — the only thing a model should read
 
-A widget that renders but overflows its box still has `ok=True`; look in
-`render_notes` for it.
+The service holds every fact behind it, so it writes the sentence once. Three
+projects each wrote their own version of it and no two runs' feedback were
+comparable.
+
+```
+Rendered 300x150.
+```
+```
+Rendered 300x150. These problems may not be visible in the image:
+- content overflows the bottom edge by 71px (<div> 268x205 "Quarterly Revenue Report")
+Shrink the content to fit: reduce font sizes, paddings, gaps, line-heights, icon/image sizes.
+If you judge any of these not to be a problem, ignore it.
+```
+```
+RENDER FAILED (no image):
+SyntaxError at line 45:23 — Expected identifier but found ","
+  44 |               top: 10,
+  45 |               left: 50%,
+     |                        ^
+```
+
+Everything in it is derived from `error` and `render_notes`, so a caller that
+wants its own wording still has the numbers. Nothing in it names the daemon's
+temporary directory, its dev server, or Vite's cache-busting nonce.
+
+### error_kind
+
+| kind | means | show the model? |
+|---|---|---|
+| `syntax` | it would not compile; the message carries the line and a caret | yes |
+| `runtime` | the component threw | yes |
+| `empty` | no DOM element, or zero size | yes |
+| `hang` | never yielded its main thread | yes |
+| `policy` | imported something the source policy does not allow | yes |
+| `unknown` | the renderer repaired itself and still cannot explain this file | **no** — a bug report about the service |
+
+`infra` and `timeout` never leave the service; they are retried and repaired
+internally. A kind you do not recognise is not the widget's fault.
+
+### render_notes — what the picture cannot say
+
+The screenshot is clipped to the widget's box, so some defects are invisible or
+indistinguishable from an intentionally empty area. One DOM pass after the page
+settles measures them:
+
+| kind | criterion | fields |
+|---|---|---|
+| `overflow` | in-flow content extends past the widget's border-box | `side` `amount` `tag` `w` `h` `text` |
+| `unpainted` | geometry authored, no pixel painted | `tag` `attr` `value` |
+| `unloaded` | `<img>` never decoded | `src` |
+| `zero_size` | drawing surface with no area | `tag` `w` `h` |
+
+Only the outermost element accountable for an overflowing side is reported: a
+descendant crosses the edge because its ancestor does, and saying it once is the
+difference between 441 notes and 111 over one collection.
+
+A widget that renders but overflows still has `ok=True` — look in
+`render_notes`, or just read `feedback_text`.
+
+## Without Python
+
+One JSON line each way over the socket. The request is unchanged from v3; the
+reply is the four groups above.
+
+```python
+import base64, json, socket
+
+req = {"v": 4, "name": "w.jsx", "width": None, "height": None,
+       "wait_extra_ms": 200, "force_resize": True, "freeze_animations": True,
+       "source": "export default function Widget(){ return <div style={{width:200,"
+                 "height:80,background:'#28a'}}/>; }"}
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect("/tmp/w2c-render/render.sock")
+s.sendall((json.dumps(req) + "\n").encode())
+buf = b""
+while not buf.endswith(b"\n"):
+    chunk = s.recv(1 << 20)
+    if not chunk:
+        break
+    buf += chunk
+
+reply = json.loads(buf)
+if reply["ok"]:
+    open("out.png", "wb").write(base64.b64decode(reply["image"]["png_b64"]))
+print(reply["feedback_text"])
+```
+
+```jsonc
+{
+  "v": 4,
+  "ok": true,
+  "image":  {"png_b64": "…", "width": 300, "height": 150},   // null when ok is false
+  "error":  null,                                            // {kind, text} when ok is false
+  "layout": [ /* render notes */ ],                          // null when ok is false
+  "feedback_text": "…",
+  "log": {"settled": true, "settle_ms": 227, "console": [],
+          "unclassified": [], "source_policy": {…}}
+}
+```
+
+`log` is what is true but not actionable. `unclassified` is console output the
+service has no rule for yet — read it yourself, never give it to a model.
+
+## What it costs
+
+Measured on an idle 96-core machine, 16 workers:
+
+| | |
+|---|---|
+| One render | ~400 ms, of which 200 ms is the `wait_extra_ms` pause |
+| Throughput | ~20/s, reached at concurrency 16 and flat beyond it |
+| Not the limit | CPU (4–6 cores of 96), Vite (400 transforms/s), worker count (16 and 48 measure the same) |
+
+Lowering `wait_extra_ms` is the one parameter that moves single-render latency:
+0 ms gives ~180 ms. It is 200 by default because a widget that is still moving
+would otherwise be screenshotted mid-animation.
 
 ## Troubleshooting
 
