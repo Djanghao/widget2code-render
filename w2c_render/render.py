@@ -181,6 +181,27 @@ def _normalize_runtime_error(message: str) -> str:
     return message.strip()
 
 
+# Every string that leaves this service names the widget by the file name its
+# caller supplied, never by where the daemon happened to put it. The temporary
+# directory, the dev server's address and Vite's cache-busting nonce are facts
+# about this process: they tell the author nothing, they put the renderer's
+# internals into whatever the caller persists, and the nonce differs on every
+# call, so the same defect never groups with itself in a collection.
+_TEMP_DIR = re.compile(r"/tmp/w2c-render-\w+/?")
+_CACHE_NONCE = re.compile(r"\?(?:import&)?v=\d+")
+_DEV_SERVER = re.compile(r"https?://127\.0\.0\.1:\d+(?:/@fs)?")
+
+
+def _scrub(text: Optional[str], jsx: Path) -> Optional[str]:
+    """The same message, with this process's own paths taken out of it."""
+    if not text:
+        return text
+    text = _DEV_SERVER.sub("", text)
+    text = _CACHE_NONCE.sub("", text)
+    text = text.replace(str(jsx), jsx.name)
+    return _TEMP_DIR.sub("", text)
+
+
 def _first_page_error(console_errors: list[str]) -> Optional[str]:
     """The widget's own uncaught exception, if the page reported one."""
     for entry in console_errors:
@@ -459,7 +480,7 @@ class RenderService:
         try:
             source = jsx.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            return self._attach_policy(
+            return self._finalize(
                 RenderResult(
                     jsx,
                     _png_for(jsx_path, output_path),
@@ -469,7 +490,7 @@ class RenderService:
             )
         violation = self.source_policy.violation(source)
         if violation is not None:
-            return self._attach_policy(
+            return self._finalize(
                 RenderResult(
                     jsx,
                     _png_for(jsx_path, output_path),
@@ -489,7 +510,7 @@ class RenderService:
             if result.ok:
                 bad_png = self._png_defect(result.png_path)
                 if bad_png is None:
-                    return self._attach_policy(result)
+                    return self._finalize(result)
                 # A screenshot that is not a PNG is this process failing, not
                 # the widget: take the same repair path.
                 result = RenderResult(
@@ -499,7 +520,7 @@ class RenderService:
                     console_errors=list(result.console_errors),
                 )
             if result.is_widget_defect:
-                return self._attach_policy(result)
+                return self._finalize(result)
 
             attempts += 1
             if attempts < RENDER_ATTEMPTS_BEFORE_RECOVERY:
@@ -511,7 +532,7 @@ class RenderService:
                 repairing_since = now
             elapsed = now - repairing_since
             if elapsed > SEVERE_RENDER_TIMEOUT_S:
-                return self._attach_policy(RenderResult(
+                return self._finalize(RenderResult(
                     Path(jsx_path), _png_for(jsx_path, output_path),
                     error=(
                         f"UnknownRenderFailure: the renderer rebuilt itself "
@@ -537,8 +558,13 @@ class RenderService:
             # itself, in `_render_once` — and a timeout that reaches here is
             # therefore the renderer's, and is retried.
 
-    def _attach_policy(self, result: RenderResult) -> RenderResult:
+    def _finalize(self, result: RenderResult) -> RenderResult:
+        """The one place every result leaves `render()` — stamp it and clean it."""
         result.source_policy = self.source_policy.descriptor()
+        result.error = _scrub(result.error, result.jsx_path)
+        result.console_errors = [
+            _scrub(entry, result.jsx_path) for entry in result.console_errors
+        ]
         return result
 
     async def render_dir(

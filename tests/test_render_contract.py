@@ -388,3 +388,48 @@ def test_a_syntax_error_is_the_widgets_own_defect():
 def inspect_source(module):
     import inspect
     return inspect.getsource(module)
+
+
+# ---- nothing about this process reaches the caller -------------------------
+
+# The forms actually observed in two collections on one machine: the browser's
+# module-fetch failure, the page's own "No default export", Vite's compile
+# error, and a message that names nothing of ours and must survive untouched.
+LEAKS = [
+    ("TypeError: Failed to fetch dynamically imported module: "
+     "http://127.0.0.1:5173/@fs/tmp/w2c-render-dryruonf/widget.jsx?import&v=1787779022455054224",
+     "TypeError: Failed to fetch dynamically imported module: widget.jsx"),
+    ("Error: No default export in /tmp/w2c-render-i5ovrmin/widget.jsx",
+     "Error: No default export in widget.jsx"),
+    ("console.error: [vite] Internal Server Error\n"
+     "/tmp/w2c-render-7xlbc2ge/widget.jsx?v=1787565314761003747: Unexpected token (24:18)",
+     "console.error: [vite] Internal Server Error\nwidget.jsx: Unexpected token (24:18)"),
+    ("ReferenceError: total is not defined", "ReferenceError: total is not defined"),
+]
+
+
+@pytest.mark.parametrize("raw,clean", LEAKS)
+def test_a_message_names_the_callers_file_not_the_daemons_path(raw, clean):
+    from w2c_render.render import _scrub
+
+    assert _scrub(raw, Path("/tmp/w2c-render-dryruonf/widget.jsx")) == clean
+
+
+@pytest.mark.parametrize("raw,_clean", LEAKS)
+def test_no_result_carries_a_temporary_path_or_the_dev_server(tmp_path, raw, _clean):
+    """The check that cannot be reasoned around: grep the finished result.
+
+    A leak is not caught by review — it arrives through whichever new message
+    the browser invents next — so the guarantee is stated over the whole
+    object, at the one place every result passes through.
+    """
+    jsx = tmp_path / "widget.jsx"
+    service = ScriptedService([lambda j, p: RenderResult(
+        j, p, error=raw, error_kind="runtime", console_errors=[raw])])
+    result = service._finalize(RenderResult(
+        jsx, tmp_path / "widget.png", error=raw, error_kind="runtime",
+        console_errors=[raw]))
+    for text in [result.error, *result.console_errors]:
+        assert "/tmp/w2c-render-" not in text
+        assert "127.0.0.1" not in text
+        assert "?v=" not in text and "?import" not in text

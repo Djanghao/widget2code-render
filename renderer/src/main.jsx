@@ -97,7 +97,8 @@ async function mount() {
     const url = `/@fs${jsxPath}?v=${encodeURIComponent(jsxVersion)}`;
     const mod = await import(/* @vite-ignore */ url);
     const Widget = mod.default;
-    if (!Widget) throw new Error(`No default export in ${jsxPath}`);
+    if (!Widget) throw new Error(
+      'No default export — the widget file must `export default function Widget()`');
 
     const pageRoot = document.getElementById('page-root');
     const root = createRoot(pageRoot);

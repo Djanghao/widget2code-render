@@ -31,6 +31,19 @@
   const EPS = 1;
   const notes = [];
   const clamp = (s, n) => String(s == null ? '' : s).trim().slice(0, n);
+
+  // `textContent` runs the children together — a card whose lines are separate
+  // <div>s reads back as "Quarterly Revenue ReportTotal 1,284,300". Joining the
+  // text nodes keeps the excerpt legible to whoever has to act on the note.
+  const textOf = (el) => {
+    const parts = [];
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const t = n.nodeValue.trim();
+      if (t) parts.push(t);
+    }
+    return parts.join(' ');
+  };
   const intersect = (a, b) => ({left: Math.max(a.left, b.left), top: Math.max(a.top, b.top),
                                 right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom)});
 
@@ -60,6 +73,21 @@
   }
 
   // ---- overflow ----
+  // An element crosses the edge because its ancestor does; reporting the whole
+  // subtree says one thing many times. Over a 4,210-render collection that is
+  // 441 notes for 111 actual problems, and one widget alone produced 118 — 108
+  // of them 1x4px tick marks under a single container overflowing by 644px.
+  // Only the outermost element responsible for a side is reported; a descendant
+  // is reported only for a side no ancestor is already accountable for.
+  const reported = new Map();               // element -> sides attributed to it
+  const covered = (el, side) => {
+    for (let a = el.parentElement; a && a !== root.parentElement; a = a.parentElement) {
+      const sides = reported.get(a);
+      if (sides && sides.has(side)) return true;
+    }
+    return false;
+  };
+
   for (const el of root.querySelectorAll('*')) {
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
@@ -86,11 +114,13 @@
     const sides = [['right', box.right - rr.right], ['bottom', box.bottom - rr.bottom],
                    ['left', rr.left - box.left],    ['top', rr.top - box.top]]
                   .filter(([, v]) => v > EPS);
-    if (!sides.length) continue;
-    for (const [side, amount] of sides) {
+    const own = sides.filter(([side]) => !covered(el, side));
+    if (!own.length) continue;
+    reported.set(el, new Set(own.map(([side]) => side)));
+    for (const [side, amount] of own) {
       notes.push({kind: 'overflow', side, amount: Math.round(amount), depth,
                   tag: el.tagName.toLowerCase(), w: Math.round(r.width), h: Math.round(r.height),
-                  text: clamp(el.textContent, 32)});
+                  text: clamp(textOf(el), 40)});
     }
   }
 
