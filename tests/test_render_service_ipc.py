@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from w2c_render import render_ipc as ipc
-from w2c_render.render import OVERFLOW_WARNING_TEXT, RenderResult
+from w2c_render.render import RenderResult
 from w2c_render.render_client import RenderClient
 
 
@@ -31,7 +31,10 @@ def test_everything_a_caller_reads_survives_the_wire():
     original = RenderResult(
         jsx_path=Path("/w/widget.jsx"),
         png_path=Path("/w/widget.png"),
-        render_notes=[{"kind": "overflow", "side": "bottom", "amount": 76}],
+        render_notes=[{"kind": "overflow", "side": "bottom", "amount": 76,
+                       "tag": "div", "w": 268, "h": 226}],
+        width=300,
+        height=150,
         settled=True,
         settle_ms=265,
         console_errors=["console.error: noisy"],
@@ -42,11 +45,19 @@ def test_everything_a_caller_reads_survives_the_wire():
             "allow_dynamic_imports": False,
         },
     )
-    restored = ipc.wire_to_result(ipc.decode(ipc.encode(ipc.result_to_wire(original))))
+    wire = ipc.decode(ipc.encode(ipc.result_to_wire(original)))
+    assert wire["ok"] is True and wire["error"] is None
+    assert wire["image"] == {"width": 300, "height": 150}
+    assert wire["layout"] == original.render_notes
+    assert "76px" in wire["feedback_text"] and "300x150" in wire["feedback_text"]
+    assert wire["log"]["console"] == original.console_errors
+
+    restored = ipc.wire_to_result(wire, jsx_path=original.jsx_path,
+                                  png_path=original.png_path)
     assert restored.ok and restored.error_kind is None
     assert restored.render_notes == original.render_notes
     assert restored.settled and restored.settle_ms == 265
-    assert restored.has_overflow and restored.overflow_warning == OVERFLOW_WARNING_TEXT
+    assert restored.has_overflow and (restored.width, restored.height) == (300, 150)
     assert restored.console_errors == original.console_errors
     assert restored.source_policy == original.source_policy
     assert restored.png_path == original.png_path
@@ -60,7 +71,12 @@ def test_a_defect_crosses_with_its_kind_and_message(kind):
         error=f"{kind} detail",
         error_kind=kind,
     )
-    restored = ipc.wire_to_result(ipc.decode(ipc.encode(ipc.result_to_wire(original))))
+    wire = ipc.decode(ipc.encode(ipc.result_to_wire(original)))
+    assert wire["ok"] is False and wire["image"] is None and wire["layout"] is None
+    assert wire["feedback_text"] == f"RENDER FAILED (no image):\n{kind} detail"
+
+    restored = ipc.wire_to_result(wire, jsx_path=original.jsx_path,
+                                  png_path=original.png_path)
     assert restored.is_widget_defect and restored.error_kind == kind
     assert restored.error == f"{kind} detail"
 
@@ -286,3 +302,72 @@ def test_the_heartbeat_carries_what_the_decision_needs(tmp_path):
     assert beat["in_flight"] == 2
     assert beat["source_policy"]["allowed_imports"] == []
     assert diagnose(beat, now=time.time(), stall_s=600, silence_s=60) is None
+
+
+# ---- the shape is the contract ---------------------------------------------
+
+def _wire(result: RenderResult, png: bytes | None = None) -> dict:
+    return ipc.decode(ipc.encode(ipc.result_to_wire(result, png_bytes=png)))
+
+
+def test_a_reply_carries_a_picture_or_a_reason_and_never_both():
+    """`ok` decides the whole shape, so no caller has to infer it.
+
+    Every caller of the flat reply invented its own rule — `error is None`
+    here, a `has_overflow` boolean there, `render_notes` dropped entirely in a
+    third — and the same render was described three different ways. There is
+    one rule now and it is checkable.
+    """
+    rendered = _wire(RenderResult(Path("w.jsx"), Path("w.png"), width=10, height=10),
+                     png=b"\x89PNG\r\n\x1a\n" + b"0" * 200)
+    failed = _wire(RenderResult(Path("w.jsx"), Path("w.png"),
+                                error="boom", error_kind="runtime"))
+
+    assert rendered["ok"] is True
+    assert rendered["image"] is not None and rendered["layout"] is not None
+    assert rendered["error"] is None
+    assert "png_b64" in rendered["image"]
+
+    assert failed["ok"] is False
+    assert failed["image"] is None and failed["layout"] is None
+    assert failed["error"] == {"kind": "runtime", "text": "boom"}
+
+
+def test_a_layout_note_the_service_cannot_phrase_stays_out_of_the_feedback():
+    """An unknown note is a bug report, not a sentence for a model to read."""
+    result = RenderResult(
+        Path("w.jsx"), Path("w.png"), width=10, height=10,
+        render_notes=[{"kind": "kind_invented_next_year", "detail": "?"},
+                      {"kind": "zero_size", "tag": "svg", "w": 0, "h": 0}],
+    )
+    wire = _wire(result)
+    assert wire["feedback_text"] == (
+        "Rendered 10x10. These problems may not be visible in the image:\n"
+        "- <svg> has no area (0x0)\n"
+        "If you judge any of these not to be a problem, ignore it."
+    )
+    assert wire["layout"] == result.render_notes, "the note itself still travels"
+
+
+def test_the_renderers_own_noise_is_carried_but_not_counted_as_a_finding():
+    """`log.console` keeps everything; `log.unclassified` is what has no home.
+
+    Vite's compile complaint and the 500 that follows it are this process
+    describing itself — 200 of the 4,210 renders in one collection. What is
+    left over is the queue of things this service has no rule for yet, and it
+    is meant to be read by us, never by a model.
+    """
+    result = RenderResult(
+        Path("w.jsx"), Path("w.png"), width=10, height=10,
+        console_errors=[
+            "console.error: [vite] Internal Server Error\nwidget.jsx: Unexpected token",
+            "console.error: Failed to load resource: the server responded with a status of 500",
+            'console.error: Error: <path> attribute d: Expected number, "…NaN 248…"',
+        ],
+    )
+    wire = _wire(result)
+    assert len(wire["log"]["console"]) == 3
+    assert wire["log"]["unclassified"] == [
+        'console.error: Error: <path> attribute d: Expected number, "…NaN 248…"'
+    ]
+    assert "NaN" not in wire["feedback_text"], "log never reaches the model"

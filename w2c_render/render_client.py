@@ -120,15 +120,17 @@ class RenderClient:
             wait_extra_ms=wait_extra_ms, force_resize=force_resize,
             freeze_animations=freeze_animations,
         ))
-        result = ipc.wire_to_result(message)
+        # The daemon rendered under its own temporary directory and the wire
+        # carries none of it; the result is labelled with the names the caller
+        # chose, which are the only ones it can do anything with.
+        result = ipc.wire_to_result(
+            message, jsx_path=Path(jsx_path) if jsx_path else png.with_suffix(".jsx"),
+            png_path=png,
+        )
         payload = ipc.wire_png_bytes(message)
         if payload is not None:
             png.parent.mkdir(parents=True, exist_ok=True)
             png.write_bytes(payload)
-        # The daemon rendered under its own temporary directory; the caller
-        # only ever knows the names it chose itself.
-        result.png_path = png
-        result.jsx_path = Path(jsx_path) if jsx_path else png.with_suffix(".jsx")
         return result
 
     async def _exchange(self, request: dict) -> dict:

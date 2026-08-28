@@ -30,7 +30,7 @@ from typing import Any, Mapping
 from .render_result import RenderResult
 
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # One JSON line now carries a whole screenshot, and asyncio's stream reader
 # refuses a line longer than 64 KB by default — which a 1920x1080 widget
@@ -99,51 +99,75 @@ def build_request(
 
 
 def result_to_wire(result: RenderResult, *, png_bytes: bytes | None = None) -> dict[str, Any]:
-    """Exactly the fields a caller reads, and nothing about the renderer.
+    """One render, in the groups a caller actually reads.
 
-    `has_overflow` / `overflow_warning` are derived from `render_notes` on
-    both sides; they stay on the wire for humans reading it by eye.
+    `ok` is the whole shape: a reply carries an `image` and a `layout`, or an
+    `error`, never both. Eleven flat fields let each caller invent its own
+    rule for that — one derived success from `error is None`, another kept
+    only the `has_overflow` boolean and dropped the notes it came from — and
+    the same render was then described three different ways downstream.
 
-    `png_bytes` travels base64-encoded: the caller has no access to the
-    temporary file the daemon rendered into, so the screenshot itself is the
-    only thing that can carry a successful render back.
+    `feedback_text` is the only thing a model is shown, and it is derived:
+    every fact behind it is in `error` and `layout`. The service writes the
+    sentence once so that two experiments' feedback can be compared.
+
+    `log` is what is true but not actionable — how long the page took to
+    settle, what the console said, what this service could not account for.
+    It travels so it can be persisted and mined; it is never shown to a model.
+
+    Nothing here names the daemon's temporary directory: the result is
+    scrubbed before it is encoded, and `jsx`/`png` are gone — the client
+    overwrote them with its caller's own paths anyway.
     """
     message: dict[str, Any] = {
         "v": PROTOCOL_VERSION,
-        # The daemon's own temporary names; the client replaces them with the
-        # ones its caller chose. Kept on the wire for a human reading it.
-        "jsx": str(result.jsx_path),
-        "png": str(result.png_path),
-        "error": result.error,
-        "error_kind": result.error_kind,
-        "console_errors": list(result.console_errors),
-        "render_notes": list(result.render_notes),
-        "settled": result.settled,
-        "settle_ms": result.settle_ms,
-        "has_overflow": result.has_overflow,
-        "overflow_warning": result.overflow_warning,
-        "source_policy": result.source_policy,
+        "ok": result.ok,
+        "image": None if not result.ok else {
+            "width": result.width,
+            "height": result.height,
+        },
+        "error": None if result.ok else {
+            "kind": result.error_kind,
+            "text": result.error,
+        },
+        "layout": None if not result.ok else list(result.render_notes),
+        "feedback_text": result.feedback_text,
+        "log": {
+            "settled": result.settled,
+            "settle_ms": result.settle_ms,
+            "console": list(result.console_errors),
+            "unclassified": result.unclassified,
+            "source_policy": result.source_policy,
+        },
     }
-    if png_bytes is not None:
-        message["png_b64"] = base64.b64encode(png_bytes).decode("ascii")
+    if png_bytes is not None and message["image"] is not None:
+        message["image"]["png_b64"] = base64.b64encode(png_bytes).decode("ascii")
     return message
 
 
 def wire_png_bytes(message: Mapping[str, Any]) -> bytes | None:
     """The screenshot itself, when the reply carried one."""
-    payload = message.get("png_b64")
+    payload = (message.get("image") or {}).get("png_b64")
     return base64.b64decode(payload) if payload else None
 
 
-def wire_to_result(message: Mapping[str, Any]) -> RenderResult:
+def wire_to_result(
+    message: Mapping[str, Any], *, jsx_path: Path, png_path: Path
+) -> RenderResult:
+    """Rebuild the result. The paths are the caller's — the wire carries none."""
+    image = message.get("image") or {}
+    error = message.get("error") or {}
+    log = message.get("log") or {}
     return RenderResult(
-        jsx_path=Path(message["jsx"]),
-        png_path=Path(message["png"]),
-        error=message.get("error"),
-        error_kind=message.get("error_kind"),
-        console_errors=list(message.get("console_errors") or []),
-        render_notes=list(message.get("render_notes") or []),
-        settled=bool(message.get("settled")),
-        settle_ms=int(message.get("settle_ms") or 0),
-        source_policy=message.get("source_policy"),
+        jsx_path=jsx_path,
+        png_path=png_path,
+        error=error.get("text"),
+        error_kind=error.get("kind"),
+        console_errors=list(log.get("console") or []),
+        render_notes=list(message.get("layout") or []),
+        settled=bool(log.get("settled")),
+        settle_ms=int(log.get("settle_ms") or 0),
+        width=image.get("width"),
+        height=image.get("height"),
+        source_policy=log.get("source_policy"),
     )

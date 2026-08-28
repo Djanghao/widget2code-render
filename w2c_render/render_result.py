@@ -7,13 +7,14 @@ directly) and talk to a running daemon without installing anything.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# Canonical human/LLM-readable warning derived from an `overflow` render note.
-# Surfaced verbatim to the reviser LLM via core/tools/render.py and persisted
-# by the collection scripts, so both share a single wording.
+# Superseded by `RenderResult.feedback_text`, which says the same thing with
+# the measured numbers in it. Kept until the collection scripts that import it
+# are switched over; it has no reader inside this repo.
 OVERFLOW_WARNING_TEXT = (
     "⚠ Content is too large for the widget's declared size and is "
     "overflowing — at least one element extends past widget bounds and is "
@@ -70,6 +71,8 @@ class RenderResult:
     render_notes: list[dict] = field(default_factory=list)
     settled: bool = False
     settle_ms: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
     source_policy: Optional[dict[str, Any]] = None
 
     @property
@@ -89,3 +92,90 @@ class RenderResult:
     @property
     def overflow_warning(self) -> Optional[str]:
         return OVERFLOW_WARNING_TEXT if self.has_overflow else None
+
+    @property
+    def unclassified(self) -> list[str]:
+        """Console output this service could not account for.
+
+        Everything it recognises is already in `error` or `render_notes`; what
+        is left is either a defect there is no rule for yet or a message that
+        should be dropped. It is never shown to a model — its job is to be
+        read by us, the same way `unknown` is: a bug report about this service.
+        """
+        return [
+            entry for entry in self.console_errors
+            if not any(noise in entry.lower() for noise in _RENDERER_NOISE)
+        ]
+
+    @property
+    def feedback_text(self) -> str:
+        """The one wording a model is shown. Derived; nothing is only here.
+
+        Three repos each wrote their own sentence for the same result, so an
+        experiment's feedback was not comparable with the next one's. The
+        service holds every fact, so it writes the sentence.
+        """
+        if not self.ok:
+            return f"RENDER FAILED (no image):\n{self.error}"
+
+        head = (f"Rendered {self.width}x{self.height}."
+                if self.width and self.height else "Rendered.")
+        lines = [line for line in map(_note_line, self.render_notes) if line]
+        if not lines:
+            return head
+        # The audit measures; it does not judge. Intentional overhang and
+        # deliberate empty space both exist, and making a model "fix" a layout
+        # that was already right is worse than missing one that was not.
+        tail = "\nIf you judge any of these not to be a problem, ignore it."
+        if self.has_overflow:
+            tail = ("\nShrink the content to fit: reduce font sizes, paddings, gaps, "
+                    "line-heights, icon/image sizes.") + tail
+        return (head + " These problems may not be visible in the image:\n"
+                + "\n".join(lines) + tail)
+
+
+# Vite complaining about a file it could not compile, and the browser reporting
+# the 500 that followed: the renderer's plumbing describing itself.
+_RENDERER_NOISE = ("[vite] internal server error", "failed to load resource:")
+
+
+def _overflow_line(note: dict) -> str:
+    excerpt = " " + json.dumps(note["text"], ensure_ascii=False) if note.get("text") else ""
+    return (f"- content overflows the {note['side']} edge by {note['amount']}px "
+            f"(<{note['tag']}> {note['w']}x{note['h']}{excerpt})")
+
+
+def _unloaded_line(note: dict) -> str:
+    return f"- <img src={json.dumps(note['src'])}> failed to load"
+
+
+def _zero_size_line(note: dict) -> str:
+    return f"- <{note['tag']}> has no area ({note['w']}x{note['h']})"
+
+
+def _unpainted_line(note: dict) -> str:
+    return f"- <{note['tag']} {note['attr']}={json.dumps(note['value'])}> painted no pixels"
+
+
+# What each kind must carry before it can be put into a sentence.
+_NOTE_TEMPLATES = {
+    "overflow": (("side", "amount", "tag", "w", "h"), _overflow_line),
+    "unloaded": (("src",), _unloaded_line),
+    "zero_size": (("tag", "w", "h"), _zero_size_line),
+    "unpainted": (("tag", "attr", "value"), _unpainted_line),
+}
+
+
+def _note_line(note: dict) -> Optional[str]:
+    """One render note as the sentence a model reads, or None.
+
+    A kind with no template, or a note missing what its template needs, is
+    dropped rather than printed raw or allowed to raise. The audit is a
+    program running in a browser and this is a result object: a note it cannot
+    phrase must not be able to take the whole render down with it, and a
+    half-formed sentence in the feedback is worse than a note only `log` sees.
+    """
+    required, render = _NOTE_TEMPLATES.get(note.get("kind"), (None, None))
+    if render is None or any(note.get(key) is None for key in required):
+        return None
+    return render(note)

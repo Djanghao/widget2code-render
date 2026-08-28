@@ -260,12 +260,28 @@ def _useful_console(entries: list[str], error: Optional[str]) -> list[str]:
         if body in seen:
             continue                              # the same throw, again
         seen.add(body)
-        if error and body == error.strip():
+        if error and body and body in error:
             continue                              # already the error field
         if _REACT_STACK_NOTE in body.lower():
             continue                              # renderer frames only
         kept.append(entry)
     return kept
+
+
+def _png_dimensions(png: Path) -> tuple[Optional[int], Optional[int]]:
+    """The screenshot's own pixel size, from its IHDR.
+
+    Read from the file rather than from the element's box: the PNG is what the
+    caller receives, and a device scale factor would make the two disagree.
+    """
+    try:
+        with open(png, "rb") as handle:
+            head = handle.read(24)
+    except OSError:
+        return None, None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None, None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
 
 
 def _png_for(jsx_path: PathLike, output_path: Optional[PathLike]) -> Path:
@@ -801,11 +817,14 @@ class RenderService:
         await page.locator("#widget-root").screenshot(
             path=str(png), omit_background=False,
         )
+        width_px, height_px = _png_dimensions(png)
         return RenderResult(
             jsx, png,
             render_notes=notes,
             settled=bool(settle.get("quiet")),
             settle_ms=settle_ms,
+            width=width_px,
+            height=height_px,
             console_errors=_useful_console(console_errors, None),
         )
 

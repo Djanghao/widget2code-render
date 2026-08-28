@@ -26,7 +26,7 @@ from w2c_render import RenderClient
 
 async with RenderClient() as renderer:
     result = await renderer.render_source(jsx_code, "out.png")
-    result.ok, result.png_path, result.render_notes, result.has_overflow
+    result.ok, result.png_path, result.render_notes, result.feedback_text
 ```
 
 `/tmp/w2c-render` (socket + heartbeat) is the only mount. Source and screenshot
@@ -34,18 +34,37 @@ travel over the socket, so output paths need not be visible to the container.
 
 ## Results
 
+`ok` decides the shape: a render carries an `image` and a `layout`, or an
+`error`, never both.
+
 | | |
 |---|---|
-| `ok=True` | PNG written and signature-verified, plus `render_notes` |
-| `error_kind="runtime"` | the component threw |
-| `error_kind="empty"` | no DOM element, or zero size |
-| `error_kind="hang"` | never became ready while a canary rendered normally |
+| `ok=True` | PNG written and signature-verified, its size, and `layout` |
+| `error.kind="syntax"` | it would not compile; the message has the line and a caret |
+| `error.kind="runtime"` | the component threw |
+| `error.kind="empty"` | no DOM element, or zero size |
+| `error.kind="hang"` | never yielded its main thread |
+| `error.kind="policy"` | it imported something the source policy does not allow |
+
+`feedback_text` is the one wording a model is shown, written from those facts
+so that two experiments' feedback are comparable:
+
+```
+Rendered 300x150. These problems may not be visible in the image:
+- content overflows the bottom edge by 71px (<div> 268x205 "Quarterly Revenue Report")
+Shrink the content to fit: reduce font sizes, paddings, gaps, line-heights, icon/image sizes.
+If you judge any of these not to be a problem, ignore it.
+```
+
+`log` is what is true but not actionable — settle time, the console, and
+`unclassified`: console output this service has no rule for yet. It is there to
+be persisted and mined, and it is never put in front of a model.
 
 Dead browser, lost dev server, bare timeout, truncated screenshot: retried and
 repaired internally, never returned. A client that cannot reach the daemon waits
 instead of failing. Requests beyond the pool size queue; they do not fail.
 
-### render_notes
+### layout
 
 The screenshot is clipped to the widget's box, so some defects are invisible in
 it. After the page settles, one DOM pass measures them:
@@ -56,6 +75,10 @@ it. After the page settles, one DOM pass measures them:
 | `unpainted` | geometry authored, no pixel painted |
 | `unloaded` | `<img>` never decoded |
 | `zero_size` | drawing surface (svg/canvas/echarts/recharts) with no area |
+
+Only the outermost element accountable for an overflowing side is reported: a
+descendant crosses the edge because its ancestor does, and saying so once is
+the difference between 441 notes and 111 over one collection.
 
 Skipped: subtrees hidden via `display:none` / `visibility:hidden` /
 `opacity:0` (ancestor-aware); for `overflow` also absolute/fixed subtrees,
@@ -117,7 +140,7 @@ One JSON line each way over the socket:
 ```python
 import base64, json, socket
 
-req = {"v": 3, "name": "w.jsx", "width": None, "height": None,
+req = {"v": 4, "name": "w.jsx", "width": None, "height": None,
        "wait_extra_ms": 200, "force_resize": True,
        "source": "export default function Widget(){ return <div style={{width:200,"
                  "height:80,background:'#28a'}}/>; }"}
@@ -133,14 +156,29 @@ while not buf.endswith(b"\n"):
     buf += chunk
 
 reply = json.loads(buf)
-if reply.get("png_b64"):
-    open("out.png", "wb").write(base64.b64decode(reply["png_b64"]))
-else:
-    print(reply["error_kind"], reply["error"])
+if reply["ok"]:
+    open("out.png", "wb").write(base64.b64decode(reply["image"]["png_b64"]))
+print(reply["feedback_text"])
 ```
 
-Reply fields: `error`, `error_kind`, `console_errors`, `render_notes`,
-`settled`, `settle_ms`, `has_overflow`, `overflow_warning`, `source_policy`, `png_b64`.
+Reply fields:
+
+```jsonc
+{
+  "v": 4,
+  "ok": true,
+  "image":  {"png_b64": "…", "width": 300, "height": 150},   // null when ok is false
+  "error":  null,                                            // {kind, text} when ok is false
+  "layout": [ /* render notes */ ],                          // null when ok is false
+  "feedback_text": "…",                                      // the only text a model is shown
+  "log": {"settled": true, "settle_ms": 227, "console": [],
+          "unclassified": [], "source_policy": {…}}
+}
+```
+
+Nothing in a reply names the daemon's temporary directory, its dev server, or
+Vite's cache-busting nonce: the nonce differs on every call, so the same defect
+would never group with itself in a collection.
 
 `RenderClient` adds: waiting through a daemon restart, the 64 MB stream limit on
 both ends (asyncio's default 64 KB fails on large widgets only), and decoding.

@@ -97,8 +97,10 @@ result.ok             # True iff a PNG was written
 result.png_path
 result.error          # set only when no PNG was produced
 result.error_kind     # runtime | empty | hang | syntax | policy | infra | timeout | unknown
-result.console_errors # diagnostics on both paths
 result.render_notes   # measured facts the picture cannot show, e.g. overflow
+result.feedback_text  # the one wording to put in front of a model
+result.width, result.height          # the screenshot's own size
+result.console_errors, result.unclassified   # diagnostics; never model-facing
 result.settled, result.settle_ms
 result.source_policy   # policy_id, allowed_imports, dynamic-import flag
 ```
