@@ -16,12 +16,23 @@ TAG="w2c-render:${SHA}"
 # machine, everywhere. Set W2C_SKIP_HOST_FONTS=1 to keep the base image's
 # fonts instead; then regenerate the golden checksums, because they describe
 # whichever baseline the image actually has.
+FONT_PATHS="usr/share/fonts usr/share/texmf/fonts etc/fonts"
 FONTS_TAR=docker/hostfonts.tar
 rm -f "$FONTS_TAR"
-if [ -z "${W2C_SKIP_HOST_FONTS:-}" ]; then
+if [ -n "${W2C_RENDER_FONTS_FROM:-}" ]; then
+  # The baseline belongs to the image, not to whichever host rebuilds it. A
+  # machine's font set changes under it — this one went from 940 faces to 272
+  # between two builds, and rebuilding from it silently produced an image whose
+  # five canaries all mismatched and which refused to serve. Carrying the fonts
+  # over from the image being replaced keeps the pixels of every existing score
+  # comparable; the golden checksums then still describe what the image has.
+  echo "carrying fonts + fontconfig over from $W2C_RENDER_FONTS_FROM ..."
+  docker run --rm --entrypoint tar "$W2C_RENDER_FONTS_FROM" \
+      -cf - -C / $FONT_PATHS > "$FONTS_TAR" 2>/dev/null || true
+  echo "  $(du -h "$FONTS_TAR" | cut -f1), sha256 $(sha256sum "$FONTS_TAR" | cut -c1-16)…"
+elif [ -z "${W2C_SKIP_HOST_FONTS:-}" ]; then
   echo "staging host fonts + fontconfig into $FONTS_TAR ..."
-  tar -cf "$FONTS_TAR" -C / \
-      usr/share/fonts usr/share/texmf/fonts etc/fonts 2>/dev/null || true
+  tar -cf "$FONTS_TAR" -C / $FONT_PATHS 2>/dev/null || true
   echo "  $(du -h "$FONTS_TAR" | cut -f1), sha256 $(sha256sum "$FONTS_TAR" | cut -c1-16)…"
 fi
 
