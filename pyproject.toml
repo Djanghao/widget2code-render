@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "widget2code-render"
+version = "1.1.0"
+description = "Deterministic React/JSX widget renderer — JSX to PNG over a Unix socket, with the defects the picture cannot show."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+
+# The client side is standard library on purpose: a process that only calls the
+# daemon installs nothing. Playwright is what the *service* needs, and it is
+# imported lazily, so it belongs to the extra rather than to the package.
+dependencies = []
+
+[project.optional-dependencies]
+service = ["playwright>=1.62.0", "Pillow>=10.0.0"]
+
+[tool.setuptools]
+packages = ["w2c_render"]

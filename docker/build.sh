@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
 STAMP="${SHA}-$(date +%Y%m%d%H%M%S)"
 TAG="w2c-render:${SHA}"
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
 
 # Text rasterization is decided by the installed fonts, and the base image
 # carries far fewer than a normal workstation — enough to move 0.35% of the
@@ -37,7 +38,7 @@ elif [ -z "${W2C_SKIP_HOST_FONTS:-}" ]; then
 fi
 
 docker build -f docker/Dockerfile --build-arg BUILD_STAMP="$STAMP" \
-    -t "$TAG" -t w2c-render:latest .
+    -t "$TAG" -t "w2c-render:${VERSION}" -t w2c-render:latest .
 echo
 echo "built $TAG"
 docker images --digests w2c-render | head -3
