@@ -56,6 +56,10 @@ RUN cd renderer && npm ci --no-audit --no-fund
 
 COPY renderer/ renderer/
 COPY w2c_render/ w2c_render/
+# The skill is a symlink to SKILL.md at the root, so copying the tree without its
+# target leaves a dangling link -- which is what an agent pulling this image and
+# looking for instructions used to find. README carries the same for a human.
+COPY SKILL.md README.md ./
 COPY .claude/skills/ .claude/skills/
 COPY docker/selfcheck.py docker/selfcheck.py
 COPY docker/golden/ docker/golden/

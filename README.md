@@ -133,7 +133,17 @@ make_renderer(n_workers=4)                   # RenderClient if a daemon is up,
 | `W2C_RENDER_STALL_TIMEOUT` | 500 | seconds of outstanding work with nothing completing before the daemon is restarted |
 
 `render_result.py`, `render_ipc.py` and `render_client.py` are standard library
-only — copy them into another project and no dependencies are needed.
+only, and they ship inside the image, so a machine that can pull it needs no
+checkout and nothing installed:
+
+```bash
+docker run --rm --entrypoint tar houstonzhang/w2c-render:latest \
+  -cf - -C /opt/w2c w2c_render | tar -xf -
+python -c "from w2c_render import RenderClient"
+```
+
+`RenderService`, the half that needs Playwright, is imported lazily, so a process
+that only talks to the daemon never pays for it.
 
 ## Protocol
 

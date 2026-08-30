@@ -69,10 +69,25 @@ machine whose pixels deviate stops rather than quietly producing different ones.
 Workers cost memory, not GPU - the renderer never uses CUDA. Size it against
 your rollout concurrency.
 
+## Get the client
+
+The client is inside the image, so a machine that can pull the image needs nothing
+else — no checkout, no `pip install`, no package on any index.
+
+```bash
+docker run --rm --entrypoint tar houstonzhang/w2c-render:latest \
+  -cf - -C /opt/w2c w2c_render | tar -xf -
+```
+
+120 KB, standard library only: `RenderService`, the half that needs Playwright, is
+imported lazily and never touched by a process that only talks to the daemon. Or skip
+it entirely and speak the socket yourself — see [Talking to it](#talking-to-it), which
+is one JSON line each way and needs no files at all.
+
 ## Call it
 
 ```python
-from w2c_render import make_renderer          # or: from core.services import make_renderer
+from w2c_render import make_renderer
 
 async with make_renderer(8) as r:             # RenderClient if the socket exists,
     result = await r.render(                  # in-process RenderService otherwise
@@ -177,10 +192,11 @@ difference between 441 notes and 111 over one collection.
 A widget that renders but overflows still has `ok=True` — look in
 `render_notes`, or just read `feedback_text`.
 
-## Without Python
+## Talking to it
 
-One JSON line each way over the socket. The request is unchanged from v3; the
-reply is the four groups above.
+One JSON line each way over the socket, so any language reaches it and the Python
+client above is a convenience rather than a requirement. The request is unchanged from
+v3; the reply is the four groups above.
 
 ```python
 import base64, json, socket
