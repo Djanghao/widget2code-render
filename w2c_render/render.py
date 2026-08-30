@@ -187,6 +187,41 @@ def _normalize_runtime_error(message: str) -> str:
     return message.strip()
 
 
+# A name imported from a package that does not export it. The bundler reports this as a
+# SyntaxError naming its own optimized-dep file, which tells the author nothing and
+# carries a nonce that differs on every call, so the same mistake never groups with
+# itself. What the author needs is the package and the name, and this is the mistake a
+# model makes constantly with icon sets: one invented name out of ten costs the whole
+# render, since the element is `undefined` and there is no picture to give back.
+_MISSING_EXPORT = re.compile(
+    r"does not provide an export named '(?P<name>[^']+)'"
+)
+_DEP_MODULE = re.compile(r"The requested module '(?P<url>[^']+)'")
+
+
+def _classify_runtime(message: str) -> tuple[str, str]:
+    """A runtime failure and the kind that says which mistake it is."""
+    if message.startswith("EmptyRender"):
+        return message, "empty"
+    missing = _MISSING_EXPORT.search(message)
+    if missing is None:
+        return message, "runtime"
+    module = _DEP_MODULE.search(message)
+    package = _package_from_dep_url(module.group("url")) if module else "the module"
+    return (
+        f"UnknownExport: '{package}' has no export named '{missing.group('name')}'",
+        "unknown_export",
+    )
+
+
+def _package_from_dep_url(url: str) -> str:
+    """Vite's optimized-dep filename back to the package specifier a widget wrote."""
+    name = url.split("/")[-1].split("?")[0]
+    if name.endswith(".js"):
+        name = name[: -len(".js")]
+    return name.replace("_", "/")
+
+
 # Every string that leaves this service names the widget by the file name its
 # caller supplied, never by where the daemon happened to put it. The temporary
 # directory, the dev server's address and Vite's cache-busting nonce are facts
@@ -194,7 +229,9 @@ def _normalize_runtime_error(message: str) -> str:
 # internals into whatever the caller persists, and the nonce differs on every
 # call, so the same defect never groups with itself in a collection.
 _TEMP_DIR = re.compile(r"/tmp/w2c-render-\w+/?")
-_CACHE_NONCE = re.compile(r"\?(?:import&)?v=\d+")
+# Vite's nonce is hex, not decimal: written as `\d+` this matched nothing and left
+# `?v=f3cb609b` in every message it was meant to remove.
+_CACHE_NONCE = re.compile(r"\?(?:import&)?v=[0-9a-f]+", re.I)
 _DEV_SERVER = re.compile(r"https?://127\.0\.0\.1:\d+(?:/@fs)?")
 
 
@@ -800,8 +837,9 @@ class RenderService:
 
         err = await page.evaluate("window.__widget_error || null")
         if err:
-            message = _normalize_runtime_error(_first_line(str(err)))
-            kind = "empty" if message.startswith("EmptyRender") else "runtime"
+            message, kind = _classify_runtime(
+                _normalize_runtime_error(_first_line(str(err)))
+            )
             if _MODULE_FETCH_FAILURE in message.lower():
                 diagnosis = await _syntax_diagnosis(jsx)
                 if diagnosis:
@@ -880,7 +918,7 @@ class RenderService:
         if any(marker in lowered for marker in _INFRA_ERROR_MARKERS):
             error, kind = _first_line(raw), "infra"
         elif page_error:
-            error, kind = _normalize_runtime_error(page_error), "runtime"
+            error, kind = _classify_runtime(_normalize_runtime_error(page_error))
         elif "timeout" in lowered:
             if page_blocked:
                 error = (

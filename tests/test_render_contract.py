@@ -433,3 +433,46 @@ def test_no_result_carries_a_temporary_path_or_the_dev_server(tmp_path, raw, _cl
         assert "/tmp/w2c-render-" not in text
         assert "127.0.0.1" not in text
         assert "?v=" not in text and "?import" not in text
+
+
+# ---- a name a package does not export ---------------------------------------
+
+from w2c_render.render import _classify_runtime  # noqa: E402
+
+
+def test_an_invented_import_name_is_reported_as_the_package_and_the_name():
+    """What the bundler says names its own optimized-dep file and carries a nonce that
+    differs on every call, so the same mistake never groups with itself and the author
+    is told nothing they can act on. One invented icon out of ten costs the whole
+    render -- the element is `undefined` and there is no picture to hand back -- so the
+    message has to be the one thing that fixes it."""
+    raw = (
+        "SyntaxError: The requested module "
+        "'/node_modules/.vite/deps/react-icons_pi.js?v=f3cb609b' "
+        "does not provide an export named 'PiNopeNopeNope'"
+    )
+    message, kind = _classify_runtime(raw)
+    assert kind == "unknown_export"
+    assert message == "UnknownExport: 'react-icons/pi' has no export named 'PiNopeNopeNope'"
+    assert "node_modules" not in message and "v=" not in message
+
+
+def test_a_package_without_a_subpath_survives_the_demangling():
+    raw = (
+        "SyntaxError: The requested module '/node_modules/.vite/deps/recharts.js?v=abc123' "
+        "does not provide an export named 'SuperChart'"
+    )
+    message, kind = _classify_runtime(raw)
+    assert kind == "unknown_export"
+    assert message == "UnknownExport: 'recharts' has no export named 'SuperChart'"
+
+
+def test_other_runtime_failures_keep_their_kind():
+    assert _classify_runtime("ReferenceError: Recharts is not defined")[1] == "runtime"
+    assert _classify_runtime("EmptyRender: the component produced no DOM element")[1] == "empty"
+
+
+def test_an_unknown_export_is_the_widget_author_s_to_fix():
+    from w2c_render.render_result import WIDGET_DEFECT_ERROR_KINDS
+
+    assert "unknown_export" in WIDGET_DEFECT_ERROR_KINDS

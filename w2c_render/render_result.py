@@ -35,7 +35,9 @@ OVERFLOW_WARNING_TEXT = (
 # repaired forever: `syntax` was missing from this tuple for one build, and
 # the daemon rebuilt its browser pool 18 times over a widget with an
 # unterminated string.
-WIDGET_DEFECT_ERROR_KINDS = ("runtime", "empty", "hang", "syntax", "policy")
+WIDGET_DEFECT_ERROR_KINDS = (
+    "runtime", "empty", "hang", "syntax", "policy", "unknown_export",
+)
 
 # What the renderer answers when it has run out of explanations: not the
 # widget's fault, not silence. Callers must surface it rather than feed it to a
@@ -52,7 +54,8 @@ class RenderResult:
     errors stay in `console_errors` as diagnostics on both paths.
 
     `error_kind` separates what the widget's author can fix from what only the
-    operator can: `runtime` / `empty` / `hang` / `syntax` / `policy` are deterministic widget defects
+    operator can: `runtime` / `empty` / `hang` / `syntax` / `policy` / `unknown_export`
+    are deterministic widget defects
     and belong in model feedback; `infra` / `timeout` are properties of the
     rendering process and never leave `RenderService.render()`.
 

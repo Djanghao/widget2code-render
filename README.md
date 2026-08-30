@@ -42,6 +42,7 @@ travel over the socket, so output paths need not be visible to the container.
 | `ok=True` | PNG written and signature-verified, its size, and `layout` |
 | `error.kind="syntax"` | it would not compile; the message has the line and a caret |
 | `error.kind="runtime"` | the component threw |
+| `error.kind="unknown_export"` | it imported a name the package does not export |
 | `error.kind="empty"` | no DOM element, or zero size |
 | `error.kind="hang"` | never yielded its main thread |
 | `error.kind="policy"` | it imported something the source policy does not allow |
@@ -240,27 +241,28 @@ m1 source under m2   ReferenceError: Recharts is not defined
 m2 source under m1   SourcePolicyError: import 'recharts' is not allowed
 ```
 
-The default source policy allows no imports — `React` and `Recharts`
-are on `window`. Renders at the size the code declares; overflow is clipped at the edge.
+Renders at the size the code declares; overflow is clipped at the edge.
 
-Import capability is frozen when the daemon starts, not selected per request. Enable only packages
-baked into the image, using exact names or a package-subpath pattern:
+Beyond the two named contracts, a daemon can be given an allowlist of its own — exact
+names or a package-subpath pattern, and only packages baked into the image, since
+allowing one that is not installed does not install it:
 
 ```bash
-# default: historical no-import profile
-docker/run.sh 8
-
 # permits e.g. import { LuSearch } from 'react-icons/lu'
 W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' docker/run.sh 8
 ```
 
+Such a policy is named `custom` and is the daemon's default for requests that name no
+mode; `--mode` and an allowlist are mutually exclusive, because a mode is a whole
+contract and half of one assembled from parts is not a contract at all.
+
 Static imports and re-exports outside the allowlist return `error_kind=policy` before a browser
 attempt. Relative/absolute imports are always forbidden. Dynamic `import()` is separately disabled;
 it can be enabled with `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS=1`, but still requires an allowlisted literal
-package. The effective versioned configuration is returned as `result.source_policy`, written to
-`/tmp/w2c-render/source_policy.json`, and included in the heartbeat. Pin both image digest and
-`source_policy.policy_id` for a reproducible experiment. Allowlisting a package not installed in the
-frozen image does not install it.
+package. The configuration a render actually used is returned as `result.source_policy`; the
+daemon's own default is written to `/tmp/w2c-render/source_policy.json` and included in the
+heartbeat, and is a default rather than a guarantee now that a request may name its own mode.
+Pin the image digest and `source_policy.policy_id` for a reproducible experiment.
 
 ## Without Docker
 

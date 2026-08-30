@@ -23,14 +23,15 @@ to install, and no per-call startup cost.
 ```bash
 docker run -d --name w2c-render --restart unless-stopped --init --shm-size=2g \
   --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -e W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' \
   -v /tmp/w2c-render:/tmp/w2c-render \
   houstonzhang/w2c-render:latest
 ```
 
-Omit `W2C_RENDER_ALLOWED_IMPORTS` for the default no-import contract. Use exact comma-separated
-packages or package-subpath patterns such as `react-icons/*`; only dependencies baked into the
-image can resolve. `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS=1` separately permits literal dynamic imports.
+Started with nothing set, that daemon serves `m1` and answers requests that name `m2` as
+well — see [Two contracts](#two-contracts). `W2C_RENDER_ALLOWED_IMPORTS` is for an
+allowlist neither mode covers: exact comma-separated packages or package-subpath patterns
+such as `react-icons/*`, and only dependencies baked into the image can resolve.
+`W2C_RENDER_ALLOW_DYNAMIC_IMPORTS=1` separately permits literal dynamic imports.
 
 Or from a checkout, which also waits until the socket answers:
 
@@ -203,6 +204,7 @@ temporary directory, its dev server, or Vite's cache-busting nonce.
 |---|---|---|
 | `syntax` | it would not compile; the message carries the line and a caret | yes |
 | `runtime` | the component threw | yes |
+| `unknown_export` | a name imported from a package that does not export it — an invented icon name, usually, and one of ten costs the whole render | yes |
 | `empty` | no DOM element, or zero size | yes |
 | `hang` | never yielded its main thread | yes |
 | `policy` | imported something the source policy does not allow | yes |
