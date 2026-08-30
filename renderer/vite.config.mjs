@@ -20,6 +20,20 @@ const resolveFrozenPackage = {
 };
 
 export default defineConfig({
+  // Everything a widget may import, pre-bundled at startup rather than discovered.
+  // Vite optimizes a dependency the first time it sees one, and a render in flight
+  // when that happens gets a module graph rebuilt under it: React ends up loaded
+  // twice and the widget dies with `Cannot read properties of null (reading
+  // 'useContext')` -- reported as a runtime defect of a widget that is fine. It cost
+  // the first m2 render of every fresh container, and only that one, which is the
+  // hardest kind of failure to catch later.
+  optimizeDeps: {
+    include: ['react', 'react-dom', 'react-dom/client', 'recharts',
+              'react-icons/pi', 'react-icons/si'],
+  },
+  // One React for the page and for anything a widget imports. Two copies leave
+  // recharts' hooks reading a dispatcher that belongs to the other one.
+  resolve: { dedupe: ['react', 'react-dom'] },
   plugins: [
     resolveFrozenPackage,
     react({

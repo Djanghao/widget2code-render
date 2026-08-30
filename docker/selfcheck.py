@@ -1,7 +1,8 @@
 """Prove this environment renders the golden set byte-exactly, or refuse.
 
 Cross-machine identity is not assumed, it is checked: every host renders the
-golden widgets (plain DOM, echarts, recharts, SVG, font stacks) and compares
+golden widgets (plain DOM, recharts, SVG, font stacks, and an m2 widget whose
+imports have to resolve) and compares
 SHA-256 of the PNGs against the checksums recorded in golden.json. A match
 proves the whole raster stack — Chromium, fonts, chart libraries — produces
 the reference pixels on this machine; a mismatch aborts before the daemon
@@ -41,6 +42,19 @@ from w2c_render.render import RenderService  # noqa: E402
 GOLDEN_DIR = HERE / "golden"
 GOLDEN_JSON = HERE / "golden.json"
 
+# A canary is rendered under the contract its name says. Without one for m2 the only proof
+# that imports resolve at all would be a collection run discovering it, and the way that
+# failed once -- Vite optimising a dependency mid-render and leaving React loaded twice --
+# blamed the widget for it and cost only the first render of a fresh container.
+MODE_BY_PREFIX = {"m2-": "m2"}
+
+
+def _mode_for(name: str) -> str:
+    for prefix, mode in MODE_BY_PREFIX.items():
+        if name.startswith(prefix):
+            return mode
+    return "m1"
+
 
 async def render_hashes() -> dict[str, str]:
     """Render the whole golden set at once — it is a startup cost, not a test."""
@@ -50,12 +64,16 @@ async def render_hashes() -> dict[str, str]:
     with tempfile.TemporaryDirectory() as tmp:
         async with RenderService(n_workers=len(widgets)) as svc:
             results = await asyncio.gather(*(
-                svc.render(jsx, Path(tmp) / f"{jsx.stem}.png") for jsx in widgets
+                svc.render(jsx, Path(tmp) / f"{jsx.stem}.png", mode=_mode_for(jsx.stem))
+                for jsx in widgets
             ))
             hashes: dict[str, str] = {}
             for jsx, result in zip(widgets, results):
                 if not result.ok:
-                    raise SystemExit(f"selfcheck: {jsx.name} failed to render: {result.error}")
+                    raise SystemExit(
+                        f"selfcheck: {jsx.name} failed to render under "
+                        f"{_mode_for(jsx.stem)}: {result.error}"
+                    )
                 hashes[jsx.stem] = hashlib.sha256(result.png_path.read_bytes()).hexdigest()
     return hashes
 

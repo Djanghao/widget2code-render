@@ -30,6 +30,12 @@ import signal
 import socket
 import subprocess
 import tempfile
+# Progress goes to stderr, never stdout. This module is one a caller embeds -- a rollout
+# worker, a scoring script, an MCP server whose stdout carries a JSON-RPC conversation --
+# and a sentence printed into such a stream is not a log line but a protocol error, which
+# the reader reports as malformed JSON pointing nowhere near here. The daemon and the
+# supervisor keep stdout: they are processes of their own, and it is their container log.
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Union
@@ -46,7 +52,7 @@ from .render_result import (  # noqa: F401
     WIDGET_DEFECT_ERROR_KINDS,
     RenderResult,
 )
-from .source_policy import SourcePolicy
+from .source_policy import SourcePolicy, policy_for_mode
 
 PathLike = Union[str, Path]
 
@@ -386,7 +392,7 @@ class RenderService:
         # Upper bound on the post-render quiescence wait; measured p99 is
         # ~265ms, so this only bounds pathological pages.
         self.settle_budget_ms = settle_budget_ms
-        self.source_policy = source_policy or SourcePolicy()
+        self.source_policy = source_policy or policy_for_mode("m1")
 
         self._vite_proc: Optional[subprocess.Popen] = None
         self._owns_vite = False
@@ -469,8 +475,14 @@ class RenderService:
         wait_extra_ms: int = 200,
         force_resize: bool = True,
         freeze_animations: bool = True,
+        mode: Optional[str] = None,
     ) -> RenderResult:
         """Render a .jsx to PNG. Returns a picture or a defect of that file.
+
+        `mode` names the contract the source is written against -- "m1" for no imports
+        and globals, "m2" for imports and none -- and defaults to the one this service
+        was started with. Every result carries the contract it was rendered under, so a
+        collection can be checked rather than trusted.
 
         Two outcomes and no third: ``ok`` with a verified PNG on disk, or a
         failure the JSX itself causes (``runtime`` / ``empty`` / ``hang``).
@@ -493,6 +505,7 @@ class RenderService:
         failure is discovered rather than waited on.
         """
         jsx = Path(jsx_path)
+        policy = self._policy(mode)
         try:
             source = jsx.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
@@ -502,9 +515,10 @@ class RenderService:
                     _png_for(jsx_path, output_path),
                     error=f"SourcePolicyError: cannot read UTF-8 JSX: {exc}",
                     error_kind="policy",
-                )
+                ),
+                policy,
             )
-        violation = self.source_policy.violation(source)
+        violation = policy.violation(source)
         if violation is not None:
             return self._finalize(
                 RenderResult(
@@ -512,7 +526,8 @@ class RenderService:
                     _png_for(jsx_path, output_path),
                     error=f"SourcePolicyError: {violation}",
                     error_kind="policy",
-                )
+                ),
+                policy,
             )
         attempts = 0
         recoveries = 0
@@ -521,12 +536,12 @@ class RenderService:
             generation = self._generation
             result = await self._attempt_within_deadline(
                 jsx_path, output_path, width, height, wait_extra_ms, force_resize,
-                freeze_animations,
+                freeze_animations, policy,
             )
             if result.ok:
                 bad_png = self._png_defect(result.png_path)
                 if bad_png is None:
-                    return self._finalize(result)
+                    return self._finalize(result, policy)
                 # A screenshot that is not a PNG is this process failing, not
                 # the widget: take the same repair path.
                 result = RenderResult(
@@ -536,7 +551,7 @@ class RenderService:
                     console_errors=list(result.console_errors),
                 )
             if result.is_widget_defect:
-                return self._finalize(result)
+                return self._finalize(result, policy)
 
             attempts += 1
             if attempts < RENDER_ATTEMPTS_BEFORE_RECOVERY:
@@ -558,7 +573,7 @@ class RenderService:
                     ),
                     error_kind="unknown",
                     console_errors=list(result.console_errors),
-                ))
+                ), policy)
             recoveries += 1
             await self._recover_infrastructure(
                 generation, reason=result.error or "", cycle=recoveries
@@ -574,9 +589,17 @@ class RenderService:
             # itself, in `_render_once` — and a timeout that reaches here is
             # therefore the renderer's, and is retried.
 
-    def _finalize(self, result: RenderResult) -> RenderResult:
-        """The one place every result leaves `render()` — stamp it and clean it."""
-        result.source_policy = self.source_policy.descriptor()
+    def _policy(self, mode: Optional[str]) -> SourcePolicy:
+        return self.source_policy if mode is None else policy_for_mode(mode)
+
+    def _finalize(self, result: RenderResult, policy: SourcePolicy | None = None) -> RenderResult:
+        """The one place every result leaves `render()` — stamp it and clean it.
+
+        The contract is stamped from the render that used it rather than from the
+        service, because a request may name a mode other than the one this service
+        was started with, and a result that claimed the wrong one would be a lie a
+        collection could not detect."""
+        result.source_policy = (policy or self.source_policy).descriptor()
         result.error = _scrub(result.error, result.jsx_path)
         result.console_errors = [
             _scrub(entry, result.jsx_path) for entry in result.console_errors
@@ -616,7 +639,7 @@ class RenderService:
 
     async def _attempt_within_deadline(
         self, jsx_path, output_path, width, height, wait_extra_ms, force_resize,
-        freeze_animations=True,
+        freeze_animations=True, policy: Optional[SourcePolicy] = None,
     ) -> RenderResult:
         """One attempt, bounded by a real clock rather than by Playwright.
 
@@ -628,7 +651,8 @@ class RenderService:
         budget = self.default_timeout_ms / 1000 + ATTEMPT_DEADLINE_SLACK_S
         task = asyncio.ensure_future(
             self._render_once(jsx_path, output_path, width, height, wait_extra_ms,
-                              force_resize, freeze_animations=freeze_animations)
+                              force_resize, freeze_animations=freeze_animations,
+                              policy=policy)
         )
         if await _abandon_after(task, budget):
             return task.result()
@@ -651,13 +675,14 @@ class RenderService:
         force_resize: bool = True,
         freeze_animations: bool = True,
         timeout_ms: Optional[int] = None,
+        policy: Optional[SourcePolicy] = None,
     ) -> RenderResult:
         """One attempt. May return an infrastructure failure; `render` will not.
 
         `timeout_ms` overrides the readiness budget for this call only; the
         canary needs a short one and must not shorten renders running beside
         it. The .jsx must default-export a `Widget` component, no imports —
-        the renderer provides React / ReactECharts / Recharts as globals.
+        the renderer provides React and Recharts as globals.
         """
         assert self._context is not None, "service not started"
         jsx = Path(jsx_path).resolve()
@@ -694,7 +719,7 @@ class RenderService:
         try:
             return await self._capture(
                 page, jsx, png, width, height, wait_extra_ms, force_resize,
-                freeze_animations, timeout_ms, console_errors,
+                freeze_animations, timeout_ms, console_errors, policy,
             )
         except Exception as e:
             reusable = False
@@ -738,6 +763,7 @@ class RenderService:
         self, page: Page, jsx: Path, png: Path, width, height,
         wait_extra_ms: int, force_resize: bool, freeze_animations: bool,
         timeout_ms: Optional[int], console_errors: list[str],
+        policy: Optional[SourcePolicy] = None,
     ) -> RenderResult:
         """Navigate, wait for readiness, settle, audit, screenshot."""
         await page.set_viewport_size({
@@ -747,7 +773,13 @@ class RenderService:
 
         # The mtime is a cache-buster: successive edits stay fresh even though
         # the Vite filesystem watcher is off.
-        url = f"{VITE_BASE}/?path={quote(str(jsx))}&v={jsx.stat().st_mtime_ns}"
+        # The page assigns only the globals the policy names, so a widget written for one
+        # contract cannot quietly satisfy the other.
+        globals_param = quote(",".join((policy or self.source_policy).globals))
+        url = (
+            f"{VITE_BASE}/?path={quote(str(jsx))}&v={jsx.stat().st_mtime_ns}"
+            f"&globals={globals_param}"
+        )
         await page.goto(url, wait_until="domcontentloaded")
 
         # Playwright enforces its own timeout from inside the page, which a
@@ -993,6 +1025,7 @@ class RenderService:
                 f"renderer: {severity} after {_first_line(reason)}; cycle {cycle}, "
                 f"generation {self._generation}, waiting {delay}s",
                 flush=True,
+                file=sys.stderr,
             )
             await asyncio.sleep(delay)
             await self._close_browser_pool()
@@ -1014,6 +1047,7 @@ class RenderService:
                         f"renderer: relaunch failed ({type(exc).__name__}: "
                         f"{_first_line(str(exc))}); retrying in {delay}s",
                         flush=True,
+                        file=sys.stderr,
                     )
                     await self._close_browser_pool()
                     await asyncio.sleep(delay)
@@ -1079,6 +1113,7 @@ class RenderService:
                     f"renderer: Vite still starting after {waited:.0f}s "
                     f"(budget {VITE_START_TIMEOUT_S}s); the machine is probably loaded",
                     flush=True,
+                    file=sys.stderr,
                 )
             await asyncio.sleep(0.5)
         await self._kill_vite()

@@ -62,12 +62,51 @@ machine whose pixels deviate stops rather than quietly producing different ones.
 | `W2C_RENDER_WORKERS` | `8` | browser contexts, i.e. concurrent renders |
 | `W2C_RENDER_IMAGE` | `w2c-render:latest` | image `docker/run.sh` starts |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | where the socket and heartbeat live |
+| `W2C_RENDER_MODE` | `m1` | default contract for requests that name none |
 | `W2C_RENDER_STALL_TIMEOUT` | `500` | seconds of outstanding work with nothing completing before the daemon is restarted |
 | `W2C_RENDER_ALLOWED_IMPORTS` | empty | comma-separated bare packages or `package/*` patterns |
 | `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS` | empty | `1/true/yes` permits literal dynamic imports, still allowlisted |
 
 Workers cost memory, not GPU - the renderer never uses CUDA. Size it against
 your rollout concurrency.
+
+## Two contracts
+
+A widget is written against one of two contracts, and the renderer serves both. They are
+exclusive rather than nested: source written for one fails loudly under the other, which
+is what keeps a collection from quietly becoming a mixture.
+
+| | `m1` | `m2` |
+|---|---|---|
+| imports | none allowed | `recharts`, `react-icons/pi`, `react-icons/si` |
+| on the page | `React`, `Recharts` as globals | nothing |
+| a chart | `<Recharts.AreaChart>` | `import { AreaChart } from 'recharts'` |
+| an icon | drawn by hand in SVG | `import { PiEyeBold } from 'react-icons/pi'` |
+| `import React` | unnecessary — it is global | refused; the automatic JSX runtime makes it pointless, and its absence puts hooks and state out of reach |
+
+`m1` is the older contract and what the 1,816-widget reference set is written in. `m2` buys
+real icon sets and ordinary React import syntax, at the price of its own reference data.
+
+Pick per request, or give a daemon a default:
+
+```python
+await client.render_source(source, "out.png", mode="m2")   # this render
+```
+
+```bash
+W2C_RENDER_MODE=m2 docker/run.sh 16                         # every render this daemon serves
+```
+
+Unset is `m1`. Every result carries the contract it was rendered under — `mode`,
+`allowed_imports`, `globals` and a `policy_id` over all three — so a collection can be
+checked for the contract that produced it rather than trusted to have used one.
+
+Written for the wrong contract, source does not half-work:
+
+```
+m1 source under m2   ReferenceError: Recharts is not defined
+m2 source under m1   SourcePolicyError: import 'recharts' is not allowed
+```
 
 ## Get the client
 
@@ -261,7 +300,7 @@ would otherwise be screenshotted mid-animation.
 | `error_kind=infra` | a browser context died; the daemon restarts it, retry the call |
 | pixels differ from another machine | the images differ - compare `W2C_IMAGE_STAMP`, and pin the digest |
 
-Every build is published under three tags: the version (`1.1.2`), the commit it
+Every build is published under three tags: the version (`1.2.0`), the commit it
 was built from, and `latest`. Pin the version for a reproducible setup and the
 digest when a run has to be provably the same renderer.
 Also record `result.source_policy["policy_id"]` (or the identical

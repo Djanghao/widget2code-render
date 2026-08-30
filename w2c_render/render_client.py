@@ -20,6 +20,12 @@ mounts none of the caller's directories, or is not even on this machine.
 from __future__ import annotations
 
 import asyncio
+# Progress goes to stderr, never stdout. This module is one a caller embeds -- a rollout
+# worker, a scoring script, an MCP server whose stdout carries a JSON-RPC conversation --
+# and a sentence printed into such a stream is not a log line but a protocol error, which
+# the reader reports as malformed JSON pointing nowhere near here. The daemon and the
+# supervisor keep stdout: they are processes of their own, and it is their container log.
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -50,10 +56,10 @@ def make_renderer(n_workers: int = 4, runtime_dir: Optional[Path] = None):
     Both sides of the fork honor the same contract and the same signatures.
     """
     if ipc.socket_path(runtime_dir).exists():
-        print(f"renderer: using shared daemon at {ipc.socket_path(runtime_dir)}", flush=True)
+        print(f"renderer: using shared daemon at {ipc.socket_path(runtime_dir)}", flush=True, file=sys.stderr)
         return RenderClient(runtime_dir)
     from .render import RenderService  # deferred: pulls in playwright
-    print("renderer: no daemon socket found; starting an in-process renderer", flush=True)
+    print("renderer: no daemon socket found; starting an in-process renderer", flush=True, file=sys.stderr)
     return RenderService(n_workers=n_workers)
 
 
@@ -78,6 +84,7 @@ class RenderClient:
         wait_extra_ms: int = 200,
         force_resize: bool = True,
         freeze_animations: bool = True,
+        mode: Optional[str] = None,
     ) -> RenderResult:
         """Same two outcomes as the in-process service, across a socket.
 
@@ -91,7 +98,7 @@ class RenderClient:
             name=jsx.name, jsx_path=jsx,
             width=width, height=height,
             wait_extra_ms=wait_extra_ms, force_resize=force_resize,
-            freeze_animations=freeze_animations,
+            freeze_animations=freeze_animations, mode=mode,
         )
 
     async def render_source(
@@ -106,6 +113,7 @@ class RenderClient:
         wait_extra_ms: int = 200,
         force_resize: bool = True,
         freeze_animations: bool = True,
+        mode: Optional[str] = None,
     ) -> RenderResult:
         """Render code the daemon cannot read from disk, and keep the PNG here.
 
@@ -118,7 +126,7 @@ class RenderClient:
             source, name=name,
             width=width, height=height,
             wait_extra_ms=wait_extra_ms, force_resize=force_resize,
-            freeze_animations=freeze_animations,
+            freeze_animations=freeze_animations, mode=mode,
         ))
         # The daemon rendered under its own temporary directory and the wire
         # carries none of it; the result is labelled with the names the caller
@@ -185,5 +193,6 @@ class RenderClient:
                 f"render-client: STILL WAITING for {self.socket_path} — {reason} "
                 f"(attempt {attempt}, {time.monotonic() - started:.0f}s so far)",
                 flush=True,
+                file=sys.stderr,
             )
         await asyncio.sleep(delay)

@@ -1,4 +1,29 @@
-"""Deterministic, startup-frozen policy for widget source capabilities."""
+"""Deterministic, startup-frozen policy for widget source capabilities.
+
+The contract a widget is written against has two halves: what it may import, and what
+it may assume already exists. Both belong here. Carrying only the first left the second
+hard-coded in the renderer's entry module, so `policy_id` -- the thing an experiment
+pins to prove which contract produced its pixels -- described half a contract.
+
+Two contracts are named and supported:
+
+    m1  no imports at all; React and Recharts are on the page as globals, so a widget
+        writes `Recharts.LineChart` as a free identifier. Icons have to be drawn by
+        hand, because react-icons has no global. This is what the reference set of
+        1,816 widgets is written in.
+
+    m2  imports required, no globals at all: `import { AreaChart } from 'recharts'`,
+        `import { PiEyeBold } from 'react-icons/pi'`. React itself may not be imported
+        -- the automatic JSX runtime makes it unnecessary, and its absence is what
+        makes hooks and state unreachable rather than merely discouraged.
+
+They are deliberately exclusive rather than one being the other plus permissions. If
+globals survived alongside imports, the same widget could be written either way and a
+collection would be a mixture of both; and since react-icons has no global, a file
+would end up importing its icons while reaching its charts off the window. Written the
+wrong way round, each fails loudly in the other: `Recharts is not defined` under m2,
+`import 'recharts' is not allowed` under m1.
+"""
 
 from __future__ import annotations
 
@@ -9,24 +34,37 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-SOURCE_POLICY_SCHEMA_VERSION = 1
+SOURCE_POLICY_SCHEMA_VERSION = 2
+
+DEFAULT_GLOBALS = ("React", "Recharts")
 
 _PACKAGE_SEGMENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+_GLOBAL_NAME = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _IDENTIFIER_START = re.compile(r"[A-Za-z_$]")
 _IDENTIFIER_PART = re.compile(r"[A-Za-z0-9_$]")
 
 
 @dataclass(frozen=True)
 class SourcePolicy:
-    """Allowed module imports; defaults to the historical no-import contract."""
+    """What a widget may import, and what it may assume the page already provides."""
 
     allowed_imports: tuple[str, ...] = ()
     allow_dynamic_imports: bool = False
+    globals: tuple[str, ...] = DEFAULT_GLOBALS
+    # Last, and keyword-only in practice: callers construct this positionally, and a new
+    # field in front of the ones they pass silently reinterprets every one of them.
+    name: str = "custom"
 
     def __post_init__(self) -> None:
         normalized = tuple(sorted(set(self.allowed_imports)))
         if normalized != self.allowed_imports:
             object.__setattr__(self, "allowed_imports", normalized)
+        names = tuple(sorted(set(self.globals)))
+        if names != self.globals:
+            object.__setattr__(self, "globals", names)
+        for name in self.globals:
+            if name not in DEFAULT_GLOBALS or _GLOBAL_NAME.fullmatch(name) is None:
+                raise ValueError(f"unknown global: {name!r}")
         if type(self.allow_dynamic_imports) is not bool:
             raise ValueError("allow_dynamic_imports must be boolean")
         for pattern in self.allowed_imports:
@@ -42,8 +80,10 @@ class SourcePolicy:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SOURCE_POLICY_SCHEMA_VERSION,
+            "mode": self.name,
             "allowed_imports": list(self.allowed_imports),
             "allow_dynamic_imports": self.allow_dynamic_imports,
+            "globals": list(self.globals),
         }
 
     def descriptor(self) -> dict[str, Any]:
@@ -74,13 +114,39 @@ class SourcePolicy:
         return f"import {specifier!r} is not allowed; allowed imports: {allowed}"
 
 
+MODES: dict[str, "SourcePolicy"] = {}
+
+
+def policy_for_mode(name: str) -> "SourcePolicy":
+    """The named contract, or a ValueError naming the ones that exist."""
+    try:
+        return MODES[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown render mode {name!r}; modes: {', '.join(sorted(MODES))}"
+        ) from None
+
+
 def source_policy_from_values(
-    allowed_imports: Sequence[str] = (), *, allow_dynamic_imports: bool = False
+    allowed_imports: Sequence[str] = (),
+    *,
+    allow_dynamic_imports: bool = False,
+    globals: Sequence[str] | None = None,
+    name: str = "custom",
 ) -> SourcePolicy:
     values: list[str] = []
     for item in allowed_imports:
         values.extend(part.strip() for part in item.split(",") if part.strip())
-    return SourcePolicy(tuple(sorted(set(values))), allow_dynamic_imports)
+    names: list[str] = []
+    if globals is not None:
+        for item in globals:
+            names.extend(part.strip() for part in item.split(",") if part.strip())
+    return SourcePolicy(
+        allowed_imports=tuple(sorted(set(values))),
+        allow_dynamic_imports=allow_dynamic_imports,
+        globals=DEFAULT_GLOBALS if globals is None else tuple(sorted(set(names))),
+        name=name,
+    )
 
 
 def write_source_policy(path: Path, policy: SourcePolicy) -> None:
@@ -204,3 +270,15 @@ def _tokens(source: str) -> list[tuple[str, str]]:
         tokens.append(("punct", character))
         index += 1
     return tokens
+
+
+MODES.update(
+    {
+        "m1": SourcePolicy(name="m1"),
+        "m2": SourcePolicy(
+            name="m2",
+            allowed_imports=("react-icons/pi", "react-icons/si", "recharts"),
+            globals=(),
+        ),
+    }
+)

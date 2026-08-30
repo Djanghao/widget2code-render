@@ -4,21 +4,11 @@ async () => {
   // size settled draw shrunk into the top-left corner; forcing a resize makes
   // them re-read the container and repaint at the final size.
   //
-  // Two libraries, two mechanisms:
-  // - ECharts: direct API. Walk `[_echarts_instance_]` elements and call
-  //   `instance.resize()`; echarts is bound on window by main.jsx for this.
-  // - Recharts: no public getInstanceByDom. Its ResponsiveContainer watches
-  //   the container via ResizeObserver, so it needs a *genuine* size change:
-  //   shrink to 1px, wait two animation frames so the observer batches its
-  //   callback, then restore. ResizeObserver fires on both edges.
-  //
-  // Both branches are no-ops when their library isn't on the page.
-  if (window.echarts) {
-    for (const el of document.querySelectorAll('[_echarts_instance_]')) {
-      const inst = window.echarts.getInstanceByDom(el);
-      if (inst) inst.resize();
-    }
-  }
+  // Recharts has no public getInstanceByDom. Its ResponsiveContainer watches the
+  // container via ResizeObserver, so it needs a *genuine* size change: shrink to
+  // 1px, wait two animation frames so the observer batches its callback, then
+  // restore. ResizeObserver fires on both edges. A no-op on a page with no
+  // responsive container.
 
   const rcs = document.querySelectorAll('.recharts-responsive-container');
   if (rcs.length === 0) return;

@@ -1,22 +1,21 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import ReactECharts from 'echarts-for-react';
-import * as echarts from 'echarts';
 import * as Recharts from 'recharts';
 
-// The widget jsx files have NO imports and reference React, ReactECharts,
-// and Recharts as free identifiers. JS resolves free variables on
-// globalThis, so exposing them here is enough.
-window.React = React;
-window.ReactECharts = ReactECharts;
-// Recharts is a single namespace; widgets use `Recharts.LineChart`,
-// `Recharts.XAxis`, etc. Saves polluting window with ~40 names.
-window.Recharts = Recharts;
-// Exposed for the render service's force_resize path (and any other
-// caller that needs to walk the page's chart instances).
-window.echarts = echarts;
-
 const params = new URLSearchParams(location.search);
+
+// Which of these the widget may assume is the daemon's source policy, not this
+// module's business: under the no-import contract a widget writes `Recharts.LineChart`
+// as a free identifier and JS resolves it on globalThis, and under the import contract
+// it writes `import { LineChart } from 'recharts'` and must not find a global to reach
+// instead. Assigning both regardless would let one widget be written either way.
+// Recharts arrives as one namespace: widgets use `Recharts.LineChart`, `Recharts.XAxis`
+// and so on, which saves putting forty names on the window.
+const AVAILABLE = { React, Recharts };
+for (const name of (params.get('globals') || '').split(',').filter(Boolean)) {
+  if (name in AVAILABLE) window[name] = AVAILABLE[name];
+}
+
 const jsxPath = params.get('path');  // absolute filesystem path
 const jsxVersion = params.get('v') || '0';
 
@@ -105,7 +104,7 @@ async function mount() {
     root.render(React.createElement(WidgetBoundary, null, React.createElement(Widget)));
     status('rendered');
 
-    // Two RAFs so layout + initial echarts paint settle before screenshot.
+    // Two RAFs so layout and the first chart paint settle before the screenshot.
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (window.__widget_error) {
         status('error');

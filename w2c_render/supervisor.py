@@ -42,7 +42,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from w2c_render import render_ipc as ipc  # noqa: E402
-from w2c_render.source_policy import source_policy_from_values  # noqa: E402
+from w2c_render.source_policy import (  # noqa: E402
+    DEFAULT_GLOBALS,
+    policy_for_mode,
+    source_policy_from_values,
+)
 
 
 def read_heartbeat(path: Path) -> dict | None:
@@ -116,13 +120,34 @@ def main() -> int:
         default=os.environ.get("W2C_RENDER_ALLOW_DYNAMIC_IMPORTS", "").lower()
         in {"1", "true", "yes"},
     )
+    parser.add_argument(
+        "--mode",
+        default=os.environ.get("W2C_RENDER_MODE"),
+        help="Default contract for requests that name none: m1 or m2. "
+        "Also reads W2C_RENDER_MODE.",
+    )
+    parser.add_argument(
+        "--globals",
+        default=os.environ.get("W2C_RENDER_GLOBALS"),
+        help="Comma-separated globals the page exposes; empty exposes none. "
+        f"Defaults to {','.join(DEFAULT_GLOBALS)}. Also reads W2C_RENDER_GLOBALS.",
+    )
     args = parser.parse_args()
     policy_values = list(args.allow_import)
     if os.environ.get("W2C_RENDER_ALLOWED_IMPORTS"):
         policy_values.append(os.environ["W2C_RENDER_ALLOWED_IMPORTS"])
-    source_policy = source_policy_from_values(
-        policy_values,
-        allow_dynamic_imports=args.allow_dynamic_imports,
+    if args.mode and (policy_values or args.globals is not None):
+        parser.error("--mode names a whole contract; do not also set imports or globals")
+    if not args.mode and not policy_values and args.globals is None:
+        args.mode = "m1"    # configuring nothing is the no-import contract, by name
+    source_policy = (
+        policy_for_mode(args.mode)
+        if args.mode
+        else source_policy_from_values(
+            policy_values,
+            allow_dynamic_imports=args.allow_dynamic_imports,
+            globals=None if args.globals is None else [args.globals],
+        )
     )
 
     args.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -156,6 +181,10 @@ def main() -> int:
                 ]
                 for pattern in source_policy.allowed_imports:
                     daemon_command.extend(("--allow-import", pattern))
+                # Always passed, including empty: a daemon left to its own default would
+                # serve globals the supervisor's policy says the widget may not assume.
+                daemon_command.extend(("--globals", ",".join(source_policy.globals)))
+                daemon_command.extend(("--mode-name", source_policy.name))
                 if source_policy.allow_dynamic_imports:
                     daemon_command.append("--allow-dynamic-imports")
                 proc = subprocess.Popen(

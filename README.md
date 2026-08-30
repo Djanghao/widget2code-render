@@ -74,7 +74,7 @@ it. After the page settles, one DOM pass measures them:
 | `overflow` | in-flow content extends past the widget's border-box |
 | `unpainted` | geometry authored, no pixel painted |
 | `unloaded` | `<img>` never decoded |
-| `zero_size` | drawing surface (svg/canvas/echarts/recharts) with no area |
+| `zero_size` | drawing surface (svg/canvas/recharts) with no area |
 
 Only the outermost element accountable for an overflowing side is reported: a
 descendant crosses the edge because its ancestor does, and saying so once is
@@ -91,12 +91,12 @@ All three are fixed in the image, fonts included — the base image ships ~50, a
 workstation ~950, and the difference moves 0.35% of the pixels of a text-heavy
 widget.
 
-Each container renders five canaries (DOM, echarts, recharts, SVG, font stacks)
+Each container renders four canaries (DOM, recharts, SVG, font stacks)
 and compares SHA-256 against checksums baked into the image. Mismatch → the
 container refuses to serve. The result is cached per machine and image stamp.
 
 - amd64 only.
-- Three tags per build: the version (`1.1.2`), the commit it was built from, and
+- Three tags per build: the version (`1.2.0`), the commit it was built from, and
   `latest`. Pin the version or the digest for repeatable work; `latest` moves.
 - Building locally bakes *your* machine's fonts, which is a different baseline.
   Regenerate checksums with `python docker/selfcheck.py --make-golden`.
@@ -127,9 +127,10 @@ make_renderer(n_workers=4)                   # RenderClient if a daemon is up,
 |---|---|---|
 | `width` / `height` | 1920×1080 | viewport; the widget renders at its own declared size |
 | `wait_extra_ms` | 200 | pause after the page settles |
-| `force_resize` | True | repaint echarts/recharts before the screenshot |
+| `force_resize` | True | repaint recharts before the screenshot |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | socket location |
 | `W2C_RENDER_WORKERS` | 8 | page pool size (~50–100 MB each) |
+| `W2C_RENDER_MODE` | `m1` | default contract: `m1` (no imports, globals) or `m2` (imports, none) |
 | `W2C_RENDER_STALL_TIMEOUT` | 500 | seconds of outstanding work with nothing completing before the daemon is restarted |
 
 `render_result.py`, `render_ipc.py` and `render_client.py` are standard library
@@ -201,7 +202,45 @@ both ends (asyncio's default 64 KB fails on large widgets only), and decoding.
 export default function Widget() { return (...) }
 ```
 
-The default source policy allows no imports — `React`, `ReactECharts`, `echarts`, and `Recharts`
+## Two contracts
+
+A widget is written against one of two contracts, and the renderer serves both. They are
+exclusive rather than nested: source written for one fails loudly under the other, which
+is what keeps a collection from quietly becoming a mixture.
+
+| | `m1` | `m2` |
+|---|---|---|
+| imports | none allowed | `recharts`, `react-icons/pi`, `react-icons/si` |
+| on the page | `React`, `Recharts` as globals | nothing |
+| a chart | `<Recharts.AreaChart>` | `import { AreaChart } from 'recharts'` |
+| an icon | drawn by hand in SVG | `import { PiEyeBold } from 'react-icons/pi'` |
+| `import React` | unnecessary — it is global | refused; the automatic JSX runtime makes it pointless, and its absence puts hooks and state out of reach |
+
+`m1` is the older contract and what the 1,816-widget reference set is written in. `m2` buys
+real icon sets and ordinary React import syntax, at the price of its own reference data.
+
+Pick per request, or give a daemon a default:
+
+```python
+await client.render_source(source, "out.png", mode="m2")   # this render
+```
+
+```bash
+W2C_RENDER_MODE=m2 docker/run.sh 16                         # every render this daemon serves
+```
+
+Unset is `m1`. Every result carries the contract it was rendered under — `mode`,
+`allowed_imports`, `globals` and a `policy_id` over all three — so a collection can be
+checked for the contract that produced it rather than trusted to have used one.
+
+Written for the wrong contract, source does not half-work:
+
+```
+m1 source under m2   ReferenceError: Recharts is not defined
+m2 source under m1   SourcePolicyError: import 'recharts' is not allowed
+```
+
+The default source policy allows no imports — `React` and `Recharts`
 are on `window`. Renders at the size the code declares; overflow is clipped at the edge.
 
 Import capability is frozen when the daemon starts, not selected per request. Enable only packages

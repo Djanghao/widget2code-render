@@ -190,6 +190,7 @@ class RenderDaemon:
                 jsx, png,
                 width=request.get("width"),
                 height=request.get("height"),
+                mode=request.get("mode"),
                 wait_extra_ms=request.get("wait_extra_ms", 200),
                 force_resize=request.get("force_resize", True),
                 freeze_animations=request.get("freeze_animations", True),
@@ -255,11 +256,15 @@ def main() -> int:
         help="Allowed bare package or package/* pattern; repeat or comma-separate.",
     )
     parser.add_argument("--allow-dynamic-imports", action="store_true")
+    parser.add_argument("--globals", default=None)
+    parser.add_argument("--mode-name", default="custom")
     args = parser.parse_args()
 
     policy = source_policy_from_values(
         args.allow_import,
         allow_dynamic_imports=args.allow_dynamic_imports,
+        globals=None if args.globals is None else [args.globals],
+        name=args.mode_name,
     )
 
     daemon = RenderDaemon(
