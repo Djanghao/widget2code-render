@@ -63,6 +63,8 @@ class RenderDaemon:
         self.source_policy = source_policy or SourcePolicy()
         self.service: RenderService | None = None
         self._in_flight = 0
+        self._in_flight_since: dict[int, float] = {}
+        self._next_request_id = 0
         self._completed = 0
         self._started_at = time.time()
         # Seeded with startup: a daemon that has never finished anything is
@@ -76,7 +78,16 @@ class RenderDaemon:
         """What a supervisor needs to tell "busy" from "wedged".
 
         `in_flight` alone cannot: an idle daemon and a stuck one both complete
-        nothing. Work outstanding *and* nothing completing is the signal.
+        nothing. Nor does adding `last_completed_at` to it, which is what this
+        published at first: after an idle spell that field is already old, so
+        the first request to arrive made the pair read as a stall and the
+        daemon was killed while serving it. Four times in thirty-three hours
+        here, each "stall" the length of a gap between runs.
+
+        `oldest_in_flight_at` is the missing half. Measured from when the
+        outstanding work began rather than from the last completion, an idle
+        daemon has nothing outstanding to be late, and a stuck one is late from
+        the moment its request went in.
         """
         payload = {
             "pid": os.getpid(),
@@ -84,6 +95,9 @@ class RenderDaemon:
             "now": time.time(),
             "last_completed_at": self._last_completed_at,
             "in_flight": self._in_flight,
+            "oldest_in_flight_at": (
+                min(self._in_flight_since.values()) if self._in_flight_since else None
+            ),
             "completed": self._completed,
             "generation": self.service._generation if self.service else -1,
             "source_policy": self.source_policy.descriptor(),
@@ -120,11 +134,15 @@ class RenderDaemon:
                     request = ipc.decode(line)
                 except Exception:
                     return
+                self._next_request_id += 1
+                request_id = self._next_request_id
                 self._in_flight += 1
+                self._in_flight_since[request_id] = time.time()
                 try:
                     result, png_bytes = await self._render(request)
                 finally:
                     self._in_flight -= 1
+                    self._in_flight_since.pop(request_id, None)
                     self._completed += 1
                     self._last_completed_at = time.time()
                 # A caller that hung up gets no answer and needs none: its

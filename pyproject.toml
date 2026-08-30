@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "widget2code-render"
-version = "1.1.0"
+version = "1.1.1"
 description = "Deterministic React/JSX widget renderer — JSX to PNG over a Unix socket, with the defects the picture cannot show."
 readme = "README.md"
 license = {text = "MIT"}

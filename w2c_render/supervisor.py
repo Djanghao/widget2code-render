@@ -5,9 +5,17 @@ exactly one failure it cannot answer: being wedged. A blocked event loop or an
 exhausted process cannot run the code that would fix it, so something outside
 has to notice and start over.
 
-Noticing needs the right signal. "No renders completing" describes an idle
-daemon as well as a stuck one; "requests outstanding and none completing" only
-describes a stuck one. That is what the heartbeat carries.
+Noticing needs the right signal, and the obvious one is wrong. "Requests
+outstanding and nothing completed for ten minutes" reads as a stall, but after
+an idle spell the last completion is already ten minutes old, so the first
+request to arrive satisfies it and a healthy daemon is killed while serving
+that request. It happened four times in thirty-three hours before this was
+written, each "stall" the length of a gap between runs, and each one surfacing
+as a dropped connection to whoever sent that request.
+
+The measurement is from when the outstanding work began. An idle daemon has
+nothing outstanding to be late; a stuck one is late from the moment its request
+went in. `oldest_in_flight_at` is what the heartbeat carries for it.
 
 SIGKILL rather than SIGTERM on that path, deliberately: a wedged process may not
 run its handlers either, and the restart is also how leaked Chromium processes
@@ -53,11 +61,17 @@ def diagnose(beat: dict | None, *, now: float, stall_s: float, silence_s: float)
             f"heartbeat is {now - beat.get('now', 0):.0f}s old "
             f"(> {silence_s:.0f}s): the daemon is not even ticking"
         )
-    if beat.get("in_flight", 0) > 0 and now - beat.get("last_completed_at", 0) > stall_s:
-        return (
-            f"{beat['in_flight']} render(s) outstanding and nothing completed for "
-            f"{now - beat.get('last_completed_at', 0):.0f}s (> {stall_s:.0f}s)"
-        )
+    if beat.get("in_flight", 0) > 0:
+        # Whichever is later: work cannot be overdue before it arrived, and completions since it
+        # arrived are proof the daemon is serving. A heartbeat from before this field existed has
+        # no oldest_in_flight_at, and falls back to the reading that only errs towards killing.
+        oldest = beat.get("oldest_in_flight_at") or beat.get("last_completed_at", 0)
+        since = now - max(oldest, beat.get("last_completed_at", 0))
+        if since > stall_s:
+            return (
+                f"{beat['in_flight']} render(s) outstanding and nothing completed for "
+                f"{since:.0f}s (> {stall_s:.0f}s)"
+            )
     return None
 
 

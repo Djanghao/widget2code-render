@@ -275,6 +275,33 @@ def test_work_outstanding_and_nothing_completing_is_wedged():
     assert reason and "outstanding" in reason
 
 
+def test_the_first_request_after_an_idle_spell_is_not_a_stall():
+    """The bug this field exists for. After an idle hour the last completion is an hour old, so
+    "outstanding and nothing completed for an hour" is true of a daemon that took its request one
+    second ago -- and it was killed mid-render, four times in the thirty-three hours before this
+    was written, each time surfacing to a client as a dropped connection."""
+    now = time.time()
+    just_started = {
+        "now": now,
+        "in_flight": 1,
+        "last_completed_at": now - 7114,
+        "oldest_in_flight_at": now - 1,
+    }
+    assert diagnose(just_started, now=now, stall_s=600, silence_s=60) is None
+
+
+def test_work_outstanding_since_before_the_stall_window_is_wedged():
+    now = time.time()
+    stuck = {
+        "now": now,
+        "in_flight": 1,
+        "last_completed_at": now - 700,
+        "oldest_in_flight_at": now - 700,
+    }
+    reason = diagnose(stuck, now=now, stall_s=600, silence_s=60)
+    assert reason and "700s" in reason
+
+
 def test_a_daemon_that_stopped_ticking_is_wedged_whatever_it_claims():
     """A blocked event loop stops writing heartbeats too, and the last one it
     wrote may well say it was idle."""
@@ -297,11 +324,31 @@ def test_the_heartbeat_carries_what_the_decision_needs(tmp_path):
     daemon._in_flight = 2
     daemon._write_heartbeat()
     beat = json.loads(ipc.heartbeat_path(tmp_path).read_text())
-    for field in ("pid", "now", "last_completed_at", "in_flight", "completed"):
+    for field in (
+        "pid", "now", "last_completed_at", "in_flight", "completed", "oldest_in_flight_at",
+    ):
         assert field in beat, field
     assert beat["in_flight"] == 2
+    assert beat["oldest_in_flight_at"] is None, "nothing is outstanding until a request records it"
     assert beat["source_policy"]["allowed_imports"] == []
     assert diagnose(beat, now=time.time(), stall_s=600, silence_s=60) is None
+
+
+def test_the_heartbeat_reports_when_the_oldest_request_arrived(tmp_path):
+    """The supervisor measures from this, so it has to be the oldest of them and not the newest:
+    a request that has been outstanding too long is not exonerated by a newer one beside it."""
+    from w2c_render.render_daemon import RenderDaemon
+
+    now = time.time()
+    daemon = RenderDaemon(runtime_dir=tmp_path, workers=1, viewport=(800, 600))
+    daemon._in_flight = 2
+    daemon._in_flight_since = {1: now - 700, 2: now - 1}
+    daemon._last_completed_at = now - 700
+    daemon._write_heartbeat()
+    beat = json.loads(ipc.heartbeat_path(tmp_path).read_text())
+    assert beat["oldest_in_flight_at"] == now - 700
+    reason = diagnose(beat, now=now, stall_s=600, silence_s=60)
+    assert reason and "outstanding" in reason
 
 
 # ---- the shape is the contract ---------------------------------------------
