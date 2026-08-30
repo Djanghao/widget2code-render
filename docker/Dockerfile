@@ -101,4 +101,4 @@ ENV W2C_IMAGE_STAMP=${BUILD_STAMP}
 # contaminating whatever consumes the renders. `--cached` records the proof in
 # the mounted runtime dir, so only the first start of an image on a machine
 # pays for it.
-CMD ["bash", "-c", "python docker/selfcheck.py --cached && exec python w2c_render/supervisor.py --workers ${W2C_RENDER_WORKERS:-8}"]
+CMD ["bash", "-c", "python docker/selfcheck.py --cached && exec python w2c_render/supervisor.py --workers ${W2C_RENDER_WORKERS:-8} --stall-timeout ${W2C_RENDER_STALL_TIMEOUT:-500}"]

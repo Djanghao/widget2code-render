@@ -239,7 +239,7 @@ would otherwise be screenshotted mid-animation.
 | `error_kind=infra` | a browser context died; the daemon restarts it, retry the call |
 | pixels differ from another machine | the images differ - compare `W2C_IMAGE_STAMP`, and pin the digest |
 
-Every build is published under three tags: the version (`1.1.1`), the commit it
+Every build is published under three tags: the version (`1.1.2`), the commit it
 was built from, and `latest`. Pin the version for a reproducible setup and the
 digest when a run has to be provably the same renderer.
 Also record `result.source_policy["policy_id"]` (or the identical

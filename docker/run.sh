@@ -36,6 +36,7 @@ docker run -d --name "$NAME" \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e W2C_RENDER_WORKERS="$WORKERS" \
+  -e W2C_RENDER_STALL_TIMEOUT="${W2C_RENDER_STALL_TIMEOUT:-500}" \
   -e W2C_RENDER_ALLOWED_IMPORTS="${W2C_RENDER_ALLOWED_IMPORTS:-}" \
   -e W2C_RENDER_ALLOW_DYNAMIC_IMPORTS="${W2C_RENDER_ALLOW_DYNAMIC_IMPORTS:-}" \
   -v /tmp/w2c-render:/tmp/w2c-render \

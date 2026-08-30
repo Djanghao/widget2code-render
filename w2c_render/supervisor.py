@@ -90,7 +90,12 @@ def main() -> int:
     parser.add_argument("--runtime-dir", type=Path, default=ipc.DEFAULT_RUNTIME_DIR)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
-        "--stall-timeout", type=float, default=600.0,
+        # Above the longest repair the daemon can legitimately be in the middle of: a Vite that
+        # died under a render restarts within 300s and the render itself is bounded at 120s, so
+        # anything under about 420 kills recoveries that were working and asks the next attempt to
+        # redo them. 500 keeps a margin over that and still bounds how long one genuinely stuck
+        # render can hold every caller.
+        "--stall-timeout", type=float, default=500.0,
         help="Seconds with work outstanding and nothing completing before a restart.",
     )
     parser.add_argument(
