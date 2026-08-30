@@ -130,6 +130,7 @@ make_renderer(n_workers=4)                   # RenderClient if a daemon is up,
 | `force_resize` | True | repaint echarts/recharts before the screenshot |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | socket location |
 | `W2C_RENDER_WORKERS` | 8 | page pool size (~50–100 MB each) |
+| `W2C_RENDER_STALL_TIMEOUT` | 500 | seconds of outstanding work with nothing completing before the daemon is restarted |
 
 `render_result.py`, `render_ipc.py` and `render_client.py` are standard library
 only — copy them into another project and no dependencies are needed.
@@ -240,9 +241,19 @@ docker/                       image, canaries, checksums, build/run/publish
 tests/                        contract, wire, fault injection, workload shapes
 ```
 
-The supervisor restarts the daemon when requests are outstanding *and* nothing
-has completed — "nothing completing" alone also describes an idle service. It
-uses SIGKILL, which also reaps leaked Chromium processes.
+The supervisor restarts the daemon when work has been outstanding, with nothing
+completing, since before the stall window. Measuring from when the work arrived
+is the whole of it: "outstanding and nothing completed for ten minutes" sounds
+like the same test, but after an idle spell the last completion is already ten
+minutes old, so the first request to arrive satisfies it and a healthy daemon is
+killed while serving that request — four times in thirty-three hours before this
+was fixed, each surfacing to a caller as a dropped connection. `heartbeat.json`
+carries `oldest_in_flight_at` for it. The kill is SIGKILL, which also reaps
+leaked Chromium processes.
+
+A stuck render therefore holds callers for at most `W2C_RENDER_STALL_TIMEOUT`
+seconds, and clients are expected to wait rather than fail: a render spanning a
+restart is slow, not failed.
 
 ## Tests
 

@@ -46,6 +46,11 @@ docker/run.sh [workers]        # default 8
 | `--init` | reaps the browser processes a render leaves behind |
 | `-v /tmp/w2c-render` | the only mount: source and screenshot both travel over the socket, so the daemon never sees your files |
 
+A wedged daemon is restarted from outside it, so a client should wait through a
+restart rather than treat a dropped connection as a failed render. Nothing you send
+can cause one: a widget that will not compile and a page that hangs both come back as
+results carrying an `error_kind`.
+
 Readiness: `/tmp/w2c-render/render.sock` exists and `heartbeat.json` is being
 updated. The container refuses to serve if its golden self-check fails, so a
 machine whose pixels deviate stops rather than quietly producing different ones.
@@ -57,6 +62,7 @@ machine whose pixels deviate stops rather than quietly producing different ones.
 | `W2C_RENDER_WORKERS` | `8` | browser contexts, i.e. concurrent renders |
 | `W2C_RENDER_IMAGE` | `w2c-render:latest` | image `docker/run.sh` starts |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | where the socket and heartbeat live |
+| `W2C_RENDER_STALL_TIMEOUT` | `500` | seconds of outstanding work with nothing completing before the daemon is restarted |
 | `W2C_RENDER_ALLOWED_IMPORTS` | empty | comma-separated bare packages or `package/*` patterns |
 | `W2C_RENDER_ALLOW_DYNAMIC_IMPORTS` | empty | `1/true/yes` permits literal dynamic imports, still allowlisted |
 
