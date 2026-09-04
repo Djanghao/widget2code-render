@@ -134,7 +134,7 @@ refuses to serve. The result is cached per machine and image stamp.
 
 ```python
 render_source(source, output_path, *, name="widget.jsx", width=None, height=None,
-              wait_extra_ms=200, force_resize=True)
+              wait_extra_ms=200)
 render(jsx_path, output_path=None, ...)      # same, reads the file locally
 make_renderer(n_workers=4)                   # RenderClient if a daemon is up,
                                              # else an in-process RenderService
@@ -144,7 +144,6 @@ make_renderer(n_workers=4)                   # RenderClient if a daemon is up,
 |---|---|---|
 | `width` / `height` | 1920×1080 | viewport; the widget renders at its own declared size |
 | `wait_extra_ms` | 200 | pause after the page settles |
-| `force_resize` | True | repaint recharts before the screenshot |
 | `W2C_RENDER_RUNTIME_DIR` | `/tmp/w2c-render` | socket location |
 | `W2C_RENDER_WORKERS` | 8 | page pool size (~50–100 MB each) |
 | `W2C_RENDER_MODE` | `m1` | default contract: `m1` (no imports, globals) or `m2` (imports, none) |
@@ -171,7 +170,7 @@ One JSON line each way over the socket:
 import base64, json, socket
 
 req = {"v": 4, "name": "w.jsx", "width": None, "height": None,
-       "wait_extra_ms": 200, "force_resize": True,
+       "wait_extra_ms": 200,
        "source": "export default function Widget(){ return <div style={{width:200,"
                  "height:80,background:'#28a'}}/>; }"}
 

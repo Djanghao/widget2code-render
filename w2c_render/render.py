@@ -18,8 +18,8 @@ without bound, and never surface to a caller. The rationale, the failure
 taxonomy and the invariants this file must hold are documented in
 README.md; comments here mark where each one is enforced.
 
-The browser-side programs (settle wait, render audit, chart repaint) live next
-to the Vite project in renderer/{settle,audit,resize}.js.
+The browser-side programs (settle wait, render audit) live next to the Vite
+project in renderer/{settle,audit}.js.
 """
 from __future__ import annotations
 
@@ -166,7 +166,6 @@ _CHROMIUM_ARGS = ("--disable-partial-raster",)
 # for page.evaluate().
 _SETTLE_JS = (RENDERER_DIR / "settle.js").read_text()
 _AUDIT_JS = (RENDERER_DIR / "audit.js").read_text()
-_RESIZE_JS = (RENDERER_DIR / "resize.js").read_text()
 
 
 # ---- small helpers ---------------------------------------------------------
@@ -525,7 +524,6 @@ class RenderService:
         width: Optional[int] = None,
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
-        force_resize: bool = True,
         freeze_animations: bool = True,
         mode: Optional[str] = None,
     ) -> RenderResult:
@@ -587,7 +585,7 @@ class RenderService:
         while True:
             generation = self._generation
             result = await self._attempt_within_deadline(
-                jsx_path, output_path, width, height, wait_extra_ms, force_resize,
+                jsx_path, output_path, width, height, wait_extra_ms,
                 freeze_animations, policy,
             )
             if result.ok:
@@ -665,7 +663,6 @@ class RenderService:
         width: Optional[int] = None,
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
-        force_resize: bool = True,
     ) -> list[RenderResult]:
         """Render every top-level .jsx in a directory to PNG, concurrently.
 
@@ -682,7 +679,6 @@ class RenderService:
                 f, output_path=out / f"{f.stem}.png",
                 width=width, height=height,
                 wait_extra_ms=wait_extra_ms,
-                force_resize=force_resize,
             )
             for f in files
         ])
@@ -690,7 +686,7 @@ class RenderService:
     # ---- one attempt -------------------------------------------------------
 
     async def _attempt_within_deadline(
-        self, jsx_path, output_path, width, height, wait_extra_ms, force_resize,
+        self, jsx_path, output_path, width, height, wait_extra_ms,
         freeze_animations=True, policy: Optional[SourcePolicy] = None,
     ) -> RenderResult:
         """One attempt, bounded by a real clock rather than by Playwright.
@@ -703,7 +699,7 @@ class RenderService:
         budget = self.default_timeout_ms / 1000 + ATTEMPT_DEADLINE_SLACK_S
         task = asyncio.ensure_future(
             self._render_once(jsx_path, output_path, width, height, wait_extra_ms,
-                              force_resize, freeze_animations=freeze_animations,
+                              freeze_animations=freeze_animations,
                               policy=policy)
         )
         if await _abandon_after(task, budget):
@@ -724,7 +720,6 @@ class RenderService:
         width: Optional[int] = None,
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
-        force_resize: bool = True,
         freeze_animations: bool = True,
         timeout_ms: Optional[int] = None,
         policy: Optional[SourcePolicy] = None,
@@ -770,7 +765,7 @@ class RenderService:
         page.on("console", _on_console)
         try:
             return await self._capture(
-                page, jsx, png, width, height, wait_extra_ms, force_resize,
+                page, jsx, png, width, height, wait_extra_ms,
                 freeze_animations, timeout_ms, console_errors, policy,
             )
         except Exception as e:
@@ -813,7 +808,7 @@ class RenderService:
 
     async def _capture(
         self, page: Page, jsx: Path, png: Path, width, height,
-        wait_extra_ms: int, force_resize: bool, freeze_animations: bool,
+        wait_extra_ms: int, freeze_animations: bool,
         timeout_ms: Optional[int], console_errors: list[str],
         policy: Optional[SourcePolicy] = None,
     ) -> RenderResult:
@@ -870,16 +865,12 @@ class RenderService:
             )
 
         if freeze_animations:
-            # Before force_resize and settle, so the audit and the screenshot
-            # describe the same finished state rather than two moments of a
-            # moving one.
+            # Before the settle wait, so the audit and the screenshot describe
+            # the same finished state rather than two moments of a moving one.
             try:
                 await page.add_style_tag(content=_FREEZE_ANIMATIONS_CSS)
             except Exception:
                 pass                  # a widget that renders is worth more than this
-
-        if force_resize:
-            await page.evaluate(_RESIZE_JS)
 
         # Wait for the widget to stop changing, then audit and screenshot that
         # one finished state — a fixed sleep would let the audit describe a

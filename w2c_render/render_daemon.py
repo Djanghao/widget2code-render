@@ -192,7 +192,6 @@ class RenderDaemon:
                 height=request.get("height"),
                 mode=request.get("mode"),
                 wait_extra_ms=request.get("wait_extra_ms", 200),
-                force_resize=request.get("force_resize", True),
                 freeze_animations=request.get("freeze_animations", True),
             )
             payload = png.read_bytes() if result.ok else None

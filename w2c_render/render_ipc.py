@@ -78,7 +78,6 @@ def build_request(
     width: int | None = None,
     height: int | None = None,
     wait_extra_ms: int = 200,
-    force_resize: bool = True,
     freeze_animations: bool = True,
     mode: str | None = None,
 ) -> dict[str, Any]:
@@ -94,7 +93,6 @@ def build_request(
         "width": width,
         "height": height,
         "wait_extra_ms": wait_extra_ms,
-        "force_resize": force_resize,
         "freeze_animations": freeze_animations,
         # Absent means the daemon's own mode. Naming one per request is what lets a
         # single pool serve both contracts, and every reply carries the one it used.

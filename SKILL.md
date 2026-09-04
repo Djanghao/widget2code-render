@@ -145,7 +145,6 @@ async with make_renderer(8) as r:             # RenderClient if the socket exist
 | `output_path` | `<jsx>.png` | where the screenshot is written |
 | `width`, `height` | natural size | viewport to render at |
 | `wait_extra_ms` | `200` | settle time after the page reports ready |
-| `force_resize` | `True` | force the widget to the requested box rather than letting content grow it |
 | `freeze_animations` | `True` | land CSS animations and transitions on their final frame |
 
 `render_source(source, output_path, ...)` takes the code as a string instead of
@@ -243,7 +242,7 @@ v3; the reply is the four groups above.
 import base64, json, socket
 
 req = {"v": 4, "name": "w.jsx", "width": None, "height": None,
-       "wait_extra_ms": 200, "force_resize": True, "freeze_animations": True,
+       "wait_extra_ms": 200, "freeze_animations": True,
        "source": "export default function Widget(){ return <div style={{width:200,"
                  "height:80,background:'#28a'}}/>; }"}
 

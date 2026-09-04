@@ -82,7 +82,6 @@ class RenderClient:
         width: Optional[int] = None,
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
-        force_resize: bool = True,
         freeze_animations: bool = True,
         mode: Optional[str] = None,
     ) -> RenderResult:
@@ -97,7 +96,7 @@ class RenderClient:
             Path(output_path) if output_path else jsx.with_suffix(".png"),
             name=jsx.name, jsx_path=jsx,
             width=width, height=height,
-            wait_extra_ms=wait_extra_ms, force_resize=force_resize,
+            wait_extra_ms=wait_extra_ms,
             freeze_animations=freeze_animations, mode=mode,
         )
 
@@ -111,7 +110,6 @@ class RenderClient:
         width: Optional[int] = None,
         height: Optional[int] = None,
         wait_extra_ms: int = 200,
-        force_resize: bool = True,
         freeze_animations: bool = True,
         mode: Optional[str] = None,
     ) -> RenderResult:
@@ -125,7 +123,7 @@ class RenderClient:
         message = await self._exchange(ipc.build_request(
             source, name=name,
             width=width, height=height,
-            wait_extra_ms=wait_extra_ms, force_resize=force_resize,
+            wait_extra_ms=wait_extra_ms,
             freeze_animations=freeze_animations, mode=mode,
         ))
         # The daemon rendered under its own temporary directory and the wire
