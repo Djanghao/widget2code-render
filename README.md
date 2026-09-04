@@ -113,7 +113,7 @@ SHA-256 checksums baked into the image. Either kind of mismatch → the containe
 refuses to serve. The result is cached per machine and image stamp.
 
 - amd64 only.
-- Three tags per build: the version (`1.3.0`), the commit it was built from, and
+- Three tags per build: the version (`1.3.1`), the commit it was built from, and
   `latest`. Pin the version or the digest for repeatable work; `latest` moves.
 - Building locally bakes *your* machine's fonts, which is a different baseline.
   Regenerate checksums with `python docker/selfcheck.py --make-golden`.

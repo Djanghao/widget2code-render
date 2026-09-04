@@ -2,6 +2,7 @@
 # Run the containerized render daemon (self-check first, then serve).
 #
 #   docker/run.sh [workers]
+#   W2C_RENDER_MODE=m2 docker/run.sh [workers]
 #   W2C_RENDER_ALLOWED_IMPORTS='react-icons/*' docker/run.sh [workers]
 #
 # The only mount is /tmp/w2c-render, the socket and heartbeat: source and
@@ -40,6 +41,7 @@ docker run -d --name "$NAME" \
   -e W2C_RENDER_ALLOWED_IMPORTS="${W2C_RENDER_ALLOWED_IMPORTS:-}" \
   -e W2C_RENDER_ALLOW_DYNAMIC_IMPORTS="${W2C_RENDER_ALLOW_DYNAMIC_IMPORTS:-}" \
   ${W2C_RENDER_GLOBALS+-e W2C_RENDER_GLOBALS="$W2C_RENDER_GLOBALS"} \
+  ${W2C_RENDER_MODE+-e W2C_RENDER_MODE="$W2C_RENDER_MODE"} \
   -v /tmp/w2c-render:/tmp/w2c-render \
   "$IMAGE"
 
