@@ -146,7 +146,7 @@ async with make_renderer(8) as r:             # RenderClient if the socket exist
 | `width`, `height` | natural size | viewport to render at |
 | `wait_extra_ms` | `200` | settle time after the page reports ready |
 | `force_resize` | `True` | force the widget to the requested box rather than letting content grow it |
-| `freeze_animations` | `True` | pause CSS/JS animation so the same frame is captured every time |
+| `freeze_animations` | `True` | land CSS animations and transitions on their final frame |
 
 `render_source(source, output_path, ...)` takes the code as a string instead of
 a path. `render_dir(dir, ...)` renders every `.jsx` in a directory.
@@ -292,6 +292,13 @@ Measured on an idle 96-core machine, 16 workers:
 Lowering `wait_extra_ms` is the one parameter that moves single-render latency:
 0 ms gives ~180 ms. It is 200 by default because a widget that is still moving
 would otherwise be screenshotted mid-animation.
+
+Chart animation is not among the things it waits for, and does not need to be:
+recharts draws its charts finished, because the browser reports
+`prefers-reduced-motion` and recharts 3 resolves its default
+`isAnimationActive: 'auto'` against it. A widget that asks for animation
+explicitly — `isAnimationActive={true}` — still animates, and is the one
+remaining way to get a different picture from the same source.
 
 ## Troubleshooting
 

@@ -87,14 +87,30 @@ Skipped: subtrees hidden via `display:none` / `visibility:hidden` /
 
 ## Determinism
 
-Pixels depend on Chromium, the installed fonts, and the chart library versions.
-All three are fixed in the image, fonts included — the base image ships ~50, a
-workstation ~950, and the difference moves 0.35% of the pixels of a text-heavy
-widget.
+Two properties, and they fail separately.
 
-Each container renders four canaries (DOM, recharts, SVG, font stacks)
-and compares SHA-256 against checksums baked into the image. Mismatch → the
-container refuses to serve. The result is cached per machine and image stamp.
+*The same widget on two machines.* Pixels depend on Chromium, the installed
+fonts, and the chart library versions. All three are fixed in the image, fonts
+included — the base image ships ~50, a workstation ~950, and the difference
+moves 0.35% of the pixels of a text-heavy widget.
+
+*The same widget twice on one machine.* Two things had to be taken away from
+Chromium for this to hold. It reuses a tile's bitmap from the previous frame
+when only part of that tile changed, so a chart whose edges are antialiased at
+fractional coordinates came back a different picture in 0.5% of renders;
+`--disable-partial-raster` removes the reuse, and costs nothing here because
+every render is one navigation and one screenshot. And recharts 3 defaults
+`isAnimationActive` to `'auto'`, resolved against `prefers-reduced-motion` —
+which the renderer now emulates, so a chart whose author did not disable
+animation is drawn finished rather than at whichever frame the clock allowed.
+Animation driven from JavaScript is not reachable by the CSS freeze, and this
+was the larger of the two: 30 renders of one such widget returned 21 pictures.
+
+Each container renders six canaries (DOM, recharts, SVG, font stacks, an m2
+widget whose imports must resolve, and one written with recharts' defaults),
+three times each. The repeats must agree with each other, and then with the
+SHA-256 checksums baked into the image. Either kind of mismatch → the container
+refuses to serve. The result is cached per machine and image stamp.
 
 - amd64 only.
 - Three tags per build: the version (`1.2.1`), the commit it was built from, and

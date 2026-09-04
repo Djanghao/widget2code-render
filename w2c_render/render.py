@@ -146,6 +146,21 @@ _FREEZE_ANIMATIONS_CSS = """
 """
 
 
+# Chromium rasterizes a layer in tiles, and by default reuses the previous
+# frame's bitmap for a tile whose content only partly changed -- "partial
+# raster" -- redrawing just the invalidated rectangle inside it. The reused and
+# the freshly drawn pixels then meet on a seam that is not a shape boundary, and
+# whether a tile takes that path at all depends on what the resource pool still
+# holds, so one DOM yields two pictures. Recharts is where it shows: its
+# geometry is computed, so its edges are antialiased at fractional positions,
+# while hand-written SVG lands on whole pixels. Measured over 8,040 renders of
+# 670 widgets: 23 of them returned more than one picture -- 0.498% of renders,
+# none outside recharts -- and with the optimization off, none, in the same wall
+# time (484.2s against 484.6s). It has nothing to win here anyway: every render
+# is one navigation and one screenshot, so there is no previous frame to keep.
+_CHROMIUM_ARGS = ("--disable-partial-raster",)
+
+
 # Browser-side programs, kept as .js files beside the Vite project so they get
 # highlighting and lint. Loaded once at import; each is a single JS expression
 # for page.evaluate().
@@ -1004,11 +1019,27 @@ class RenderService:
     async def _launch_browser_pool(self) -> None:
         """Build playwright, browser, context and the page pool."""
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=True)
+        self._browser = await self._pw.chromium.launch(
+            headless=True, args=list(_CHROMIUM_ARGS),
+        )
         self._context = await self._browser.new_context(
             viewport={"width": self.default_viewport[0],
                       "height": self.default_viewport[1]},
             device_scale_factor=1,
+            # Recharts 3 defaults `isAnimationActive` to 'auto' and resolves that
+            # against this media feature, so a chart whose author did not say
+            # otherwise is drawn finished instead of at whichever frame of a
+            # 1.5s animation the clock allowed. The CSS freeze above cannot
+            # reach it: recharts drives its animation from JavaScript, not from
+            # a transition. Measured on twelve chart widgets with the prop
+            # removed -- eleven of the twelve returned more than one picture
+            # across 30 renders, one of them twenty-one distinct ones; with the
+            # feature emulated all twelve are byte-identical to the same widget
+            # written with `isAnimationActive={false}`. An explicit `{false}`
+            # never reaches the 'auto' branch, so this changes nothing for the
+            # widgets that already carry it: 4,020 renders of 370 of them, not
+            # one pixel different.
+            reduced_motion="reduce",
         )
         pages = await asyncio.gather(
             *(self._context.new_page() for _ in range(self.n_workers))
